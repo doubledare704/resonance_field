@@ -40,6 +40,16 @@ export type GameSnapshot = {
   selectedTool: NodeType;
 };
 
+export type GameState = {
+  contractVersion: typeof CONTRACT_VERSION;
+  postId: string;
+  subredditName: string | null;
+  phase: GamePhase;
+  dailyResetAtUtc: number;
+  globalScore: number;
+  nodes: GameNode[];
+};
+
 export type RequestSyncMessage = {
   type: 'REQUEST_SYNC';
   data?: {
@@ -137,6 +147,28 @@ export type GameInitResponse = {
   snapshot: GameSnapshot;
 };
 
+export type NodeDeployResponse = {
+  type: 'node_deployed';
+  contractVersion: typeof CONTRACT_VERSION;
+  snapshot: GameSnapshot;
+  node: GameNode;
+  removedNodeId: string | null;
+};
+
+export type ThroughputResponse = {
+  type: 'throughput_accepted';
+  contractVersion: typeof CONTRACT_VERSION;
+  snapshot: GameSnapshot;
+  scoreDelta: number;
+};
+
+export type ResetResponse = {
+  type: 'reset_complete';
+  contractVersion: typeof CONTRACT_VERSION;
+  snapshot: GameSnapshot;
+  archivedScore: number;
+};
+
 export type ErrorResponse = {
   type: 'error';
   contractVersion: typeof CONTRACT_VERSION;
@@ -171,4 +203,3 @@ export const createEmptySnapshot = ({
     selectedTool: 'ATTRACTOR',
   };
 };
-
