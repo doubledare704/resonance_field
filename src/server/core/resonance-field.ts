@@ -5,6 +5,8 @@ import {
   DAILY_RESET_HOUR_UTC,
   MAX_ACTIVE_NODES,
   NODE_LIFESPAN_MS,
+  NodeDeployRejectionReason,
+  NodeType,
 } from '../../shared/api';
 import type {
   GameNode,
@@ -12,11 +14,9 @@ import type {
   GameSnapshot,
   GameState,
   NodeDeployMessage,
-  NodeDeployRejectionReason,
   ResetResponse,
   SnapshotSeed,
   ThroughputResponse,
-  NodeType,
 } from '../../shared/api';
 
 const STATE_KEY_PREFIX = 'resonance:state:';
@@ -40,7 +40,11 @@ type FreshStateResult = {
 };
 
 const isNodeType = (value: string): value is NodeType => {
-  return value === 'ATTRACTOR' || value === 'REPELLER' || value === 'VORTEX';
+  return (
+    value === NodeType.Attractor ||
+    value === NodeType.Repeller ||
+    value === NodeType.Vortex
+  );
 };
 
 const isFiniteNumber = (value: unknown): value is number => {
@@ -92,7 +96,7 @@ const toSnapshot = (state: GameState, username: string): GameSnapshot => {
     userActiveNodeIds: userNodes.map((node) => node.id),
     userActiveNodeCount: userNodes.length,
     userMaxActiveNodes: MAX_ACTIVE_NODES,
-    selectedTool: 'ATTRACTOR',
+    selectedTool: NodeType.Attractor,
   };
 };
 
@@ -241,14 +245,14 @@ export const deployNode = async (
 
   if (!isNodeType(input.type)) {
     return {
-      error: 'invalid_type',
+      error: NodeDeployRejectionReason.InvalidType,
       message: `Unsupported node type: ${input.type}`,
     };
   }
 
   if (!isFiniteNumber(input.x) || !isFiniteNumber(input.y)) {
     return {
-      error: 'invalid_position',
+      error: NodeDeployRejectionReason.InvalidPosition,
       message: 'Node position must be finite numbers',
     };
   }

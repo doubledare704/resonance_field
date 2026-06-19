@@ -3,17 +3,45 @@ export const MAX_ACTIVE_NODES = 3;
 export const NODE_LIFESPAN_MS = 60_000;
 export const DAILY_RESET_HOUR_UTC = 0;
 
-export type NodeType = 'ATTRACTOR' | 'REPELLER' | 'VORTEX';
+export enum NodeType {
+  Attractor = 'ATTRACTOR',
+  Repeller = 'REPELLER',
+  Vortex = 'VORTEX',
+}
 
 export type GamePhase = 'booting' | 'idle' | 'active' | 'resetting';
 
-export type NodeRemovalReason = 'expired' | 'quota' | 'manual' | 'reset';
+export enum NodeRemovalReason {
+  Expired = 'expired',
+  Quota = 'quota',
+  Manual = 'manual',
+  Reset = 'reset',
+}
 
-export type NodeDeployRejectionReason =
-  | 'quota_exceeded'
-  | 'invalid_type'
-  | 'invalid_position'
-  | 'sync_required';
+export enum NodeDeployRejectionReason {
+  QuotaExceeded = 'quota_exceeded',
+  InvalidType = 'invalid_type',
+  InvalidPosition = 'invalid_position',
+  SyncRequired = 'sync_required',
+}
+
+export enum BridgeMessageType {
+  RequestSync = 'REQUEST_SYNC',
+  SelectTool = 'SELECT_TOOL',
+  NodeDeploy = 'NODE_DEPLOY',
+  SubmitThroughput = 'SUBMIT_THROUGHPUT',
+  InitialSnapshot = 'INITIAL_SNAPSHOT',
+  NodeAdded = 'NODE_ADDED',
+  NodeRemoved = 'NODE_REMOVED',
+  GlobalScoreUpdated = 'GLOBAL_SCORE_UPDATED',
+  NodeDeployRejected = 'NODE_DEPLOY_REJECTED',
+  SyncError = 'SYNC_ERROR',
+}
+
+export enum ScoreUpdateReason {
+  Batch = 'batch',
+  Reset = 'reset',
+}
 
 export type GameNode = {
   id: string;
@@ -51,21 +79,21 @@ export type GameState = {
 };
 
 export type RequestSyncMessage = {
-  type: 'REQUEST_SYNC';
+  type: BridgeMessageType.RequestSync;
   data?: {
     postId?: string;
   };
 };
 
 export type SelectToolMessage = {
-  type: 'SELECT_TOOL';
+  type: BridgeMessageType.SelectTool;
   data: {
     tool: NodeType;
   };
 };
 
 export type NodeDeployMessage = {
-  type: 'NODE_DEPLOY';
+  type: BridgeMessageType.NodeDeploy;
   data: {
     type: NodeType;
     x: number;
@@ -74,7 +102,7 @@ export type NodeDeployMessage = {
 };
 
 export type SubmitThroughputMessage = {
-  type: 'SUBMIT_THROUGHPUT';
+  type: BridgeMessageType.SubmitThroughput;
   data: {
     count: number;
   };
@@ -87,19 +115,19 @@ export type ClientBridgeMessage =
   | SubmitThroughputMessage;
 
 export type InitialSnapshotMessage = {
-  type: 'INITIAL_SNAPSHOT';
+  type: BridgeMessageType.InitialSnapshot;
   data: GameSnapshot;
 };
 
 export type NodeAddedMessage = {
-  type: 'NODE_ADDED';
+  type: BridgeMessageType.NodeAdded;
   data: {
     node: GameNode;
   };
 };
 
 export type NodeRemovedMessage = {
-  type: 'NODE_REMOVED';
+  type: BridgeMessageType.NodeRemoved;
   data: {
     nodeId: string;
     reason: NodeRemovalReason;
@@ -107,16 +135,16 @@ export type NodeRemovedMessage = {
 };
 
 export type GlobalScoreUpdatedMessage = {
-  type: 'GLOBAL_SCORE_UPDATED';
+  type: BridgeMessageType.GlobalScoreUpdated;
   data: {
     score: number;
     delta: number;
-    reason: 'batch' | 'reset';
+    reason: ScoreUpdateReason;
   };
 };
 
 export type NodeDeployRejectedMessage = {
-  type: 'NODE_DEPLOY_REJECTED';
+  type: BridgeMessageType.NodeDeployRejected;
   data: {
     reason: NodeDeployRejectionReason;
     message: string;
@@ -125,7 +153,7 @@ export type NodeDeployRejectedMessage = {
 };
 
 export type SyncErrorMessage = {
-  type: 'SYNC_ERROR';
+  type: BridgeMessageType.SyncError;
   data: {
     message: string;
   };
@@ -200,6 +228,6 @@ export const createEmptySnapshot = ({
     userActiveNodeIds: [],
     userActiveNodeCount: 0,
     userMaxActiveNodes: MAX_ACTIVE_NODES,
-    selectedTool: 'ATTRACTOR',
+    selectedTool: NodeType.Attractor,
   };
 };

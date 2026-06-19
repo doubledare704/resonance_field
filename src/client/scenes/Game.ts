@@ -5,6 +5,14 @@ import {
   requestInitialSnapshot,
   submitThroughputRequest,
 } from '../bridge';
+import { ParticleField } from '../simulation';
+import {
+  BridgeMessageType,
+  NodeDeployRejectionReason,
+  NodeRemovalReason,
+  NodeType,
+  ScoreUpdateReason,
+} from '../../shared/api';
 import type {
   GameSnapshot,
   GlobalScoreUpdatedMessage,
@@ -13,7 +21,6 @@ import type {
   NodeDeployRejectedMessage,
   NodeDeployResponse,
   NodeRemovedMessage,
-  NodeType,
   ServerBridgeMessage,
 } from '../../shared/api';
 
@@ -37,19 +44,19 @@ const TOOL_CARDS: ToolCard[] = [
   {
     accent: 0x00f0ff,
     description: 'Pull fluid into narrow channels',
-    key: 'ATTRACTOR',
+    key: NodeType.Attractor,
     label: 'Gravity Well',
   },
   {
     accent: 0xff0055,
     description: 'Push streams away from obstacles',
-    key: 'REPELLER',
+    key: NodeType.Repeller,
     label: 'Deflection Prism',
   },
   {
     accent: 0xffaa00,
     description: 'Spin particles into orbit',
-    key: 'VORTEX',
+    key: NodeType.Vortex,
     label: 'Vortex Helix',
   },
 ];
@@ -95,31 +102,6 @@ const UI_LAYOUT = {
   },
 } as const;
 
-const BRIDGE_MESSAGE_TYPE = {
-  globalScoreUpdated: 'GLOBAL_SCORE_UPDATED',
-  initialSnapshot: 'INITIAL_SNAPSHOT',
-  nodeAdded: 'NODE_ADDED',
-  nodeDeployRejected: 'NODE_DEPLOY_REJECTED',
-  nodeRemoved: 'NODE_REMOVED',
-  syncError: 'SYNC_ERROR',
-} as const;
-
-const DEPLOY_REJECTION_REASON = {
-  invalidPosition: 'invalid_position',
-  invalidType: 'invalid_type',
-  quotaExceeded: 'quota_exceeded',
-  syncRequired: 'sync_required',
-} as const;
-
-const NODE_REMOVAL_REASON = {
-  quota: 'quota',
-} as const;
-
-const SCORE_UPDATE_REASON = {
-  batch: 'batch',
-  reset: 'reset',
-} as const;
-
 export class Game extends Scene {
   camera: Phaser.Cameras.Scene2D.Camera;
   background: GameObjects.Rectangle;
@@ -135,15 +117,16 @@ export class Game extends Scene {
   dockRail: Phaser.GameObjects.Graphics;
   dockContainer!: Phaser.GameObjects.Container;
   toolUi!: Record<NodeType, ToolUi>;
+  simulation!: ParticleField;
   snapshot: GameSnapshot | null = null;
   localPendingScore = 0;
   private throughputTimer?: Phaser.Time.TimerEvent;
   private rejectionResetTimer: Phaser.Time.TimerEvent | null = null;
-  private selectedTool: NodeType = 'ATTRACTOR';
+  private selectedTool: NodeType = NodeType.Attractor;
   private rejectedTool: NodeType | null = null;
-  private readonly handleToolKeyOne = () => this.selectTool('ATTRACTOR');
-  private readonly handleToolKeyTwo = () => this.selectTool('REPELLER');
-  private readonly handleToolKeyThree = () => this.selectTool('VORTEX');
+  private readonly handleToolKeyOne = () => this.selectTool(NodeType.Attractor);
+  private readonly handleToolKeyTwo = () => this.selectTool(NodeType.Repeller);
+  private readonly handleToolKeyThree = () => this.selectTool(NodeType.Vortex);
 
   constructor() {
     super('Game');
@@ -192,8 +175,22 @@ export class Game extends Scene {
       color: '#ff5b86',
     });
 
+    this.simulation = new ParticleField(this, this.scale.width, this.scale.height);
     this.dockContainer = this.add.container(0, 0);
     this.toolUi = this.createToolDock();
+
+    this.background.setDepth(0);
+    this.atmosphere.setDepth(1);
+    this.grid.setDepth(1);
+    this.playfieldFrame.setDepth(6);
+    this.dockRail.setDepth(7);
+    this.dockContainer.setDepth(8);
+    this.titleText.setDepth(9);
+    this.subtitleText.setDepth(9);
+    this.statusText.setDepth(9);
+    this.scoreText.setDepth(9);
+    this.timerText.setDepth(9);
+    this.nodeQuotaText.setDepth(9);
 
     this.refreshLayout();
     this.scale.on('resize', (gameSize: Phaser.Structs.Size) => {
@@ -213,7 +210,7 @@ export class Game extends Scene {
     });
 
     if (window.parent && window.parent !== window) {
-      window.parent.postMessage({ type: 'REQUEST_SYNC' }, '*');
+      window.parent.postMessage({ type: BridgeMessageType.RequestSync }, '*');
     }
 
     void this.loadInitialSnapshot();
@@ -259,6 +256,7 @@ export class Game extends Scene {
     this.throughputTimer?.remove(false);
     this.rejectionResetTimer?.remove(false);
     this.rejectionResetTimer = null;
+    this.simulation.destroy();
     window.removeEventListener('message', this.handleBridgeMessage);
     this.input.off('pointerdown', this.handlePointerDown);
     this.input.keyboard?.off('keydown-ONE', this.handleToolKeyOne);
@@ -277,22 +275,22 @@ export class Game extends Scene {
 
   private applyServerMessage(message: ServerBridgeMessage) {
     switch (message.type) {
-      case BRIDGE_MESSAGE_TYPE.initialSnapshot:
+      case BridgeMessageType.InitialSnapshot:
         this.applySnapshot(message);
         break;
-      case BRIDGE_MESSAGE_TYPE.nodeAdded:
+      case BridgeMessageType.NodeAdded:
         this.mergeNode(message);
         break;
-      case BRIDGE_MESSAGE_TYPE.nodeRemoved:
+      case BridgeMessageType.NodeRemoved:
         this.removeNode(message);
         break;
-      case BRIDGE_MESSAGE_TYPE.globalScoreUpdated:
+      case BridgeMessageType.GlobalScoreUpdated:
         this.updateScore(message);
         break;
-      case BRIDGE_MESSAGE_TYPE.nodeDeployRejected:
+      case BridgeMessageType.NodeDeployRejected:
         this.handleDeployRejected(message);
         break;
-      case BRIDGE_MESSAGE_TYPE.syncError:
+      case BridgeMessageType.SyncError:
         this.statusText.setText(message.data.message);
         break;
       default:
@@ -322,7 +320,7 @@ export class Game extends Scene {
             y: pointer.worldY,
           },
         },
-        type: BRIDGE_MESSAGE_TYPE.nodeDeployRejected,
+        type: BridgeMessageType.NodeDeployRejected,
       });
       return;
     }
@@ -335,9 +333,9 @@ export class Game extends Scene {
       this.applyServerMessage({
         data: {
           nodeId: result.removedNodeId,
-          reason: NODE_REMOVAL_REASON.quota,
+          reason: NodeRemovalReason.Quota,
         },
-        type: BRIDGE_MESSAGE_TYPE.nodeRemoved,
+        type: BridgeMessageType.NodeRemoved,
       });
     }
 
@@ -345,13 +343,31 @@ export class Game extends Scene {
       data: {
         node: result.node,
       },
-      type: BRIDGE_MESSAGE_TYPE.nodeAdded,
+      type: BridgeMessageType.NodeAdded,
     });
 
     this.applySnapshot({
-      type: BRIDGE_MESSAGE_TYPE.initialSnapshot,
+      type: BridgeMessageType.InitialSnapshot,
       data: result.snapshot,
     });
+  }
+
+  override update(_time: number, delta: number) {
+    if (!this.simulation) {
+      return;
+    }
+
+    this.pruneExpiredNodes();
+    const collected = this.simulation.step(delta, this.snapshot?.nodes ?? []);
+    if (collected > 0) {
+      this.queueThroughput(collected);
+    }
+
+    if (this.snapshot) {
+      this.timerText.setText(
+        `${UI_TEXT.resetTimerPrefix} ${formatCountdown(this.snapshot.dailyResetAtUtc)}`
+      );
+    }
   }
 
   private async flushThroughput() {
@@ -368,7 +384,7 @@ export class Game extends Scene {
         data: {
           message: result.error.message,
         },
-        type: BRIDGE_MESSAGE_TYPE.syncError,
+        type: BridgeMessageType.SyncError,
       });
       return;
     }
@@ -376,14 +392,14 @@ export class Game extends Scene {
     this.applyServerMessage({
       data: {
         delta: result.data.scoreDelta,
-        reason: SCORE_UPDATE_REASON.batch,
+        reason: ScoreUpdateReason.Batch,
         score: result.data.snapshot.globalScore,
       },
-      type: BRIDGE_MESSAGE_TYPE.globalScoreUpdated,
+      type: BridgeMessageType.GlobalScoreUpdated,
     });
 
     this.applySnapshot({
-      type: BRIDGE_MESSAGE_TYPE.initialSnapshot,
+      type: BridgeMessageType.InitialSnapshot,
       data: result.data.snapshot,
     });
   }
@@ -400,13 +416,13 @@ export class Game extends Scene {
           data: {
             message: response.error.message,
           },
-          type: BRIDGE_MESSAGE_TYPE.syncError,
+          type: BridgeMessageType.SyncError,
         });
         return;
       }
 
       this.applySnapshot({
-        type: BRIDGE_MESSAGE_TYPE.initialSnapshot,
+        type: BridgeMessageType.InitialSnapshot,
         data: response.data.snapshot,
       });
     } catch (error) {
@@ -418,6 +434,7 @@ export class Game extends Scene {
   private applySnapshot(message: InitialSnapshotMessage) {
     this.snapshot = { ...message.data, nodes: [...message.data.nodes] };
     this.selectedTool = this.snapshot.selectedTool;
+    this.reconcileSnapshotDerivedFields();
     this.statusText.setText(UI_TEXT.initialSnapshot(this.snapshot.username, this.snapshot.subredditName));
     this.renderSnapshot();
   }
@@ -432,6 +449,7 @@ export class Game extends Scene {
       this.snapshot.nodes = [...this.snapshot.nodes, message.data.node];
     }
 
+    this.reconcileSnapshotDerivedFields();
     this.renderSnapshot();
   }
 
@@ -441,6 +459,7 @@ export class Game extends Scene {
     }
 
     this.snapshot.nodes = this.snapshot.nodes.filter((node) => node.id !== message.data.nodeId);
+    this.reconcileSnapshotDerivedFields();
     this.renderSnapshot();
   }
 
@@ -460,9 +479,8 @@ export class Game extends Scene {
 
     this.scoreText.setText(`Score ${this.snapshot.globalScore}`);
     this.nodeQuotaText.setText(
-      `${UI_TEXT.toolPrefix} ${this.snapshot.nodes.length} / ${this.snapshot.userMaxActiveNodes}`
+      `${UI_TEXT.toolPrefix} ${this.snapshot.userActiveNodeCount} / ${this.snapshot.userMaxActiveNodes}`
     );
-    this.timerText.setText(`${UI_TEXT.resetTimerPrefix} ${formatCountdown(this.snapshot.dailyResetAtUtc)}`);
     this.updateToolDock();
   }
 
@@ -496,11 +514,11 @@ export class Game extends Scene {
       ui.icon.lineStyle(isRejected ? 4 : isActive ? 4 : 2, isRejected ? 0xff0055 : card.accent, 1);
       ui.icon.fillStyle(isRejected ? 0xff0055 : card.accent, isActive ? 0.22 : 0.1);
 
-      if (card.key === 'ATTRACTOR') {
+      if (card.key === NodeType.Attractor) {
         ui.icon.strokeCircle(0, UI_LAYOUT.dock.iconCenterY, isActive ? 18 : 16);
         ui.icon.strokeCircle(0, UI_LAYOUT.dock.iconCenterY, isActive ? 28 : 26);
         ui.icon.strokeCircle(0, UI_LAYOUT.dock.iconCenterY, isActive ? 38 : 36);
-      } else if (card.key === 'REPELLER') {
+      } else if (card.key === NodeType.Repeller) {
         ui.icon.strokeTriangle(-22, 16, 0, -20, 22, 16);
         ui.icon.fillTriangle(-22, 16, 0, -20, 22, 16);
       } else {
@@ -596,24 +614,49 @@ export class Game extends Scene {
     this.dockRail.lineStyle(1, 0xff0055, 0.18);
     this.dockRail.strokeRoundedRect(34, height - UI_LAYOUT.dock.railInsetInner, width - 68, 88, 18);
   }
+
+  private pruneExpiredNodes() {
+    if (!this.snapshot) {
+      return;
+    }
+
+    const now = Date.now();
+    const before = this.snapshot.nodes.length;
+    this.snapshot.nodes = this.snapshot.nodes.filter((node) => node.expiresAt > now);
+
+    if (this.snapshot.nodes.length !== before) {
+      this.reconcileSnapshotDerivedFields();
+      this.renderSnapshot();
+    }
+  }
+
+  private reconcileSnapshotDerivedFields() {
+    if (!this.snapshot) {
+      return;
+    }
+
+    const userNodes = this.snapshot.nodes.filter((node) => node.ownerId === this.snapshot?.username);
+    this.snapshot.userActiveNodeIds = userNodes.map((node) => node.id);
+    this.snapshot.userActiveNodeCount = userNodes.length;
+  }
 }
 
 const deriveDeployRejectionReason = (message: string) => {
   const lowerMessage = message.toLowerCase();
 
   if (lowerMessage.includes('position')) {
-    return DEPLOY_REJECTION_REASON.invalidPosition;
+    return NodeDeployRejectionReason.InvalidPosition;
   }
 
   if (lowerMessage.includes('type')) {
-    return DEPLOY_REJECTION_REASON.invalidType;
+    return NodeDeployRejectionReason.InvalidType;
   }
 
   if (lowerMessage.includes('quota')) {
-    return DEPLOY_REJECTION_REASON.quotaExceeded;
+    return NodeDeployRejectionReason.QuotaExceeded;
   }
 
-  return DEPLOY_REJECTION_REASON.syncRequired;
+  return NodeDeployRejectionReason.SyncRequired;
 };
 
 const formatCountdown = (targetUtcMs: number) => {
