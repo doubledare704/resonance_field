@@ -1,11 +1,16 @@
 import { Scene, GameObjects } from 'phaser';
 import * as Phaser from 'phaser';
+import {
+  deployNodeRequest,
+  requestInitialSnapshot,
+  submitThroughputRequest,
+} from '../bridge';
 import type {
-  GameInitResponse,
   GameSnapshot,
   GlobalScoreUpdatedMessage,
   InitialSnapshotMessage,
   NodeAddedMessage,
+  NodeDeployResponse,
   NodeRemovedMessage,
   ServerBridgeMessage,
 } from '../../shared/api';
@@ -19,6 +24,8 @@ export class Game extends Scene {
   nodeText: GameObjects.Text;
   toolText: GameObjects.Text;
   snapshot: GameSnapshot | null = null;
+  localPendingScore = 0;
+  private throughputTimer?: Phaser.Time.TimerEvent;
 
   constructor() {
     super('Game');
@@ -64,6 +71,12 @@ export class Game extends Scene {
 
     window.addEventListener('message', this.handleBridgeMessage);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown);
+    this.input.on('pointerdown', this.handlePointerDown);
+    this.throughputTimer = this.time.addEvent({
+      callback: this.flushThroughput,
+      delay: 10_000,
+      loop: true,
+    });
 
     if (window.parent && window.parent !== window) {
       window.parent.postMessage({ type: 'REQUEST_SYNC' }, '*');
@@ -73,7 +86,9 @@ export class Game extends Scene {
   }
 
   private handleShutdown = () => {
+    this.throughputTimer?.remove(false);
     window.removeEventListener('message', this.handleBridgeMessage);
+    this.input.off('pointerdown', this.handlePointerDown);
   };
 
   private handleBridgeMessage = (event: MessageEvent) => {
@@ -82,6 +97,10 @@ export class Game extends Scene {
       return;
     }
 
+    this.applyServerMessage(message);
+  };
+
+  private applyServerMessage(message: ServerBridgeMessage) {
     switch (message.type) {
       case 'INITIAL_SNAPSHOT':
         this.applySnapshot(message);
@@ -95,20 +114,128 @@ export class Game extends Scene {
       case 'GLOBAL_SCORE_UPDATED':
         this.updateScore(message);
         break;
+      case 'NODE_DEPLOY_REJECTED':
+        this.statusText.setText(message.data.message);
+        break;
+      case 'SYNC_ERROR':
+        this.statusText.setText(message.data.message);
+        break;
       default:
         break;
     }
   };
 
+  private handlePointerDown = async (pointer: Phaser.Input.Pointer) => {
+    if (!this.snapshot) {
+      return;
+    }
+
+    const result = await deployNodeRequest({
+      type: this.snapshot.selectedTool,
+      x: pointer.worldX,
+      y: pointer.worldY,
+    });
+
+    if (!result.ok) {
+      const requested = {
+        type: this.snapshot.selectedTool,
+        x: pointer.worldX,
+        y: pointer.worldY,
+      };
+
+      this.applyServerMessage({
+        data: {
+          message: result.error.message,
+          reason: deriveDeployRejectionReason(result.error.message),
+          requested,
+        },
+        type: 'NODE_DEPLOY_REJECTED',
+      });
+      return;
+    }
+
+    this.handleDeploySuccess(result.data);
+  };
+
+  private handleDeploySuccess(result: NodeDeployResponse) {
+    if (result.removedNodeId) {
+      this.applyServerMessage({
+        data: {
+          nodeId: result.removedNodeId,
+          reason: 'quota',
+        },
+        type: 'NODE_REMOVED',
+      });
+    }
+
+    this.applyServerMessage({
+      data: {
+        node: result.node,
+      },
+      type: 'NODE_ADDED',
+    });
+
+    this.applySnapshot({
+      type: 'INITIAL_SNAPSHOT',
+      data: result.snapshot,
+    });
+  }
+
+  private async flushThroughput() {
+    if (!this.snapshot || this.localPendingScore <= 0) {
+      return;
+    }
+
+    const scoreBatch = this.localPendingScore;
+    this.localPendingScore = 0;
+
+    const result = await submitThroughputRequest(scoreBatch);
+    if (!result.ok) {
+      this.applyServerMessage({
+        data: {
+          message: result.error.message,
+        },
+        type: 'SYNC_ERROR',
+      });
+      return;
+    }
+
+    this.applyServerMessage({
+      data: {
+        delta: result.data.scoreDelta,
+        reason: 'batch',
+        score: result.data.snapshot.globalScore,
+      },
+      type: 'GLOBAL_SCORE_UPDATED',
+    });
+
+    this.applySnapshot({
+      type: 'INITIAL_SNAPSHOT',
+      data: result.data.snapshot,
+    });
+  }
+
+  queueThroughput(count: number) {
+    this.localPendingScore += count;
+  }
+
   private async loadInitialSnapshot() {
     try {
-      const response = await fetch('/api/init');
+      const response = await requestInitialSnapshot();
       if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
+        this.applyServerMessage({
+          data: {
+            message: response.error.message,
+          },
+          type: 'SYNC_ERROR',
+        });
+        return;
       }
 
-      const data = (await response.json()) as GameInitResponse;
-      this.applySnapshot({ type: 'INITIAL_SNAPSHOT', data: data.snapshot });
+      this.applySnapshot({
+        type: 'INITIAL_SNAPSHOT',
+        data: response.data.snapshot,
+      });
     } catch (error) {
       console.error('Failed to fetch initial snapshot:', error);
       this.statusText.setText('Snapshot load failed. Waiting for bridge sync...');
@@ -178,3 +305,17 @@ export class Game extends Scene {
     this.toolText.setPosition(margin, height - margin - 20);
   }
 }
+
+const deriveDeployRejectionReason = (message: string) => {
+  const lowerMessage = message.toLowerCase();
+  if (lowerMessage.includes('position')) {
+    return 'invalid_position' as const;
+  }
+  if (lowerMessage.includes('type')) {
+    return 'invalid_type' as const;
+  }
+  if (lowerMessage.includes('quota')) {
+    return 'quota_exceeded' as const;
+  }
+  return 'sync_required' as const;
+};
