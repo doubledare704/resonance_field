@@ -23,7 +23,7 @@ export enum NodeType {
   Vortex = 'VORTEX',
 }
 
-export type GamePhase = 'booting' | 'idle' | 'active' | 'resetting';
+export type GamePhase = 'booting' | 'idle' | 'active';
 
 export enum NodeRemovalReason {
   Expired = 'expired',
@@ -81,6 +81,7 @@ export type GameSnapshot = {
   userMaxActiveNodes: typeof MAX_ACTIVE_NODES;
   selectedTool: NodeType;
   fieldLayout?: FieldLayout | undefined;
+  lastArchivedScore?: number | undefined;
 };
 
 export type GameState = {

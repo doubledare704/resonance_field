@@ -81,7 +81,7 @@ const getEmptyState = (seed: SnapshotSeed): GameState => {
   };
 };
 
-const toSnapshot = (state: GameState, username: string): GameSnapshot => {
+const toSnapshot = (state: GameState, username: string, archivedScore?: number | null): GameSnapshot => {
   const userNodes = state.nodes.filter((node) => node.ownerId === username);
 
   return {
@@ -98,6 +98,7 @@ const toSnapshot = (state: GameState, username: string): GameSnapshot => {
     userMaxActiveNodes: MAX_ACTIVE_NODES,
     selectedTool: NodeType.Attractor,
     fieldLayout: state.fieldLayout,
+    lastArchivedScore: archivedScore ?? undefined,
   };
 };
 
@@ -130,8 +131,7 @@ const parseState = (value: string | null | undefined, seed: SnapshotSeed): GameS
         phase:
           parsed.phase === 'booting' ||
           parsed.phase === 'idle' ||
-          parsed.phase === 'active' ||
-          parsed.phase === 'resetting'
+          parsed.phase === 'active'
             ? parsed.phase
             : 'idle',
         dailyResetAtUtc: isFiniteNumber(parsed.dailyResetAtUtc)
@@ -200,7 +200,6 @@ const refreshStateForNow = async (seed: SnapshotSeed): Promise<FreshStateResult>
   if (now >= state.dailyResetAtUtc) {
     archivedScore = state.globalScore;
     await archiveState(state, now);
-    state.phase = 'resetting';
     state.globalScore = 0;
     state.nodes = [];
     state.dailyResetAtUtc = getNextDailyResetAt(now);
@@ -239,8 +238,8 @@ export const loadSnapshot = async (): Promise<GameSnapshot | null> => {
     return null;
   }
 
-  const { state } = await refreshStateForNow(seed);
-  return toSnapshot(state, seed.username);
+  const { state, archivedScore } = await refreshStateForNow(seed);
+  return toSnapshot(state, seed.username, archivedScore);
 };
 
 export const deployNode = async (
@@ -252,7 +251,7 @@ export const deployNode = async (
   }
 
   const now = Date.now();
-  const { state } = await refreshStateForNow({ ...seed, now });
+  const { state, archivedScore } = await refreshStateForNow({ ...seed, now });
 
   if (!isNodeType(input.type)) {
     return {
@@ -301,7 +300,7 @@ export const deployNode = async (
   await saveState(state);
 
   return {
-    snapshot: toSnapshot(state, seed.username),
+    snapshot: toSnapshot(state, seed.username, archivedScore),
     node,
     removedNodeId,
   };
@@ -324,14 +323,14 @@ export const submitThroughput = async (
     };
   }
 
-  const { state } = await refreshStateForNow(seed);
+  const { state, archivedScore } = await refreshStateForNow(seed);
   state.globalScore += count;
   state.phase = 'active';
   await saveState(state);
 
   return {
     contractVersion: CONTRACT_VERSION,
-    snapshot: toSnapshot(state, seed.username),
+    snapshot: toSnapshot(state, seed.username, archivedScore),
     scoreDelta: count,
     type: 'throughput_accepted',
   };
@@ -348,7 +347,7 @@ export const resetDailyState = async (): Promise<ResetResponse | null> => {
   return {
     archivedScore: archivedScore ?? 0,
     contractVersion: CONTRACT_VERSION,
-    snapshot: toSnapshot(state, seed.username),
+    snapshot: toSnapshot(state, seed.username, archivedScore),
     type: 'reset_complete',
   };
 };

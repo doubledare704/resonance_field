@@ -462,9 +462,14 @@ export class Game extends Scene {
     }
 
     if (this.snapshot) {
-      this.timerText.setText(
-        `${UI_TEXT.resetTimerPrefix} ${formatCountdown(this.snapshot.dailyResetAtUtc)}`
-      );
+      const remaining = Math.max(0, this.snapshot.dailyResetAtUtc - Date.now());
+      if (remaining <= 0) {
+        this.timerText.setText('NEW DAY');
+      } else {
+        this.timerText.setText(
+          `${UI_TEXT.resetTimerPrefix} ${formatCountdown(this.snapshot.dailyResetAtUtc)}`
+        );
+      }
     }
   }
 
@@ -531,16 +536,79 @@ export class Game extends Scene {
 
   private applySnapshot(message: InitialSnapshotMessage) {
     const prevLayout = this.snapshot?.fieldLayout;
+    const newLayout = message.data.fieldLayout;
+    const dayChanged = !prevLayout || (newLayout && prevLayout.dayKey !== newLayout.dayKey);
+    const archivedScore = message.data.lastArchivedScore;
+
     this.snapshot = { ...message.data, nodes: [...message.data.nodes] };
     this.selectedTool = this.snapshot.selectedTool;
 
-    if (this.snapshot.fieldLayout && (!prevLayout || prevLayout.dayKey !== this.snapshot.fieldLayout.dayKey)) {
-      this.simulation.setFieldLayout(this.snapshot.fieldLayout);
+    if (newLayout && dayChanged) {
+      if (prevLayout) {
+        const capturedLayout = newLayout;
+        this.tweens.add({
+          targets: this.simulation,
+          alpha: 0,
+          duration: 300,
+          ease: 'Power2',
+          onComplete: () => {
+            this.simulation.setFieldLayout(capturedLayout);
+            this.tweens.add({
+              targets: this.simulation,
+              alpha: 1,
+              duration: 300,
+              ease: 'Power2',
+            });
+          },
+        });
+      } else {
+        this.simulation.setFieldLayout(newLayout);
+      }
+    }
+
+    if (archivedScore !== undefined && archivedScore !== null) {
+      this.showResetOverlay(archivedScore);
     }
 
     this.reconcileSnapshotDerivedFields();
     this.statusText.setText(UI_TEXT.initialSnapshot(this.snapshot.username, this.snapshot.subredditName));
     this.renderSnapshot();
+  }
+
+  private showResetOverlay(archivedScore: number) {
+    const overlayText = this.add.text(
+      this.scale.width / 2,
+      this.scale.height / 2,
+      `Day archived — Score: ${archivedScore}`,
+      {
+        fontFamily: 'monospace',
+        fontSize: '24px',
+        color: '#00f0ff',
+        stroke: '#00151a',
+        strokeThickness: 4,
+      }
+    );
+    overlayText.setOrigin(0.5);
+    overlayText.setDepth(100);
+    overlayText.setAlpha(0);
+
+    this.tweens.add({
+      targets: overlayText,
+      alpha: 1,
+      duration: 200,
+      ease: 'Power2',
+      onComplete: () => {
+        this.time.delayedCall(2000, () => {
+          this.tweens.add({
+            targets: overlayText,
+            alpha: 0,
+            duration: 300,
+            ease: 'Power2',
+            onComplete: () => overlayText.destroy(),
+          });
+        });
+      },
+    });
   }
 
   private mergeNode(message: NodeAddedMessage) {

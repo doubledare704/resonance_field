@@ -63,6 +63,21 @@ export class ParticleField {
     this.height = height;
   }
 
+  get alpha(): number {
+    return this.sinkGraphics.alpha;
+  }
+
+  set alpha(value: number) {
+    this.setAlpha(value);
+  }
+
+  setAlpha(alpha: number) {
+    this.sinkGraphics.setAlpha(alpha);
+    this.nodeGraphics.setAlpha(alpha);
+    this.particleGraphics.setAlpha(alpha);
+    this.fieldGraphics.setAlpha(alpha);
+  }
+
   setFieldLayout(layout: FieldLayout | null) {
     this.layout = layout;
   }
