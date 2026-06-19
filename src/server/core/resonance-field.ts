@@ -232,14 +232,26 @@ export const getRequestSeed = async (): Promise<SnapshotSeed | null> => {
   };
 };
 
+const buildSnapshot = async (
+  seed: SnapshotSeed,
+  modifier?: (state: GameState) => void | Promise<void>
+): Promise<{ snapshot: GameSnapshot; archivedScore: number | null; state: GameState }> => {
+  const { state, archivedScore } = await refreshStateForNow(seed);
+  if (modifier) {
+    await modifier(state);
+  }
+  const snapshot = toSnapshot(state, seed.username, archivedScore);
+  return { snapshot, archivedScore, state };
+};
+
 export const loadSnapshot = async (): Promise<GameSnapshot | null> => {
   const seed = await getRequestSeed();
   if (!seed) {
     return null;
   }
 
-  const { state, archivedScore } = await refreshStateForNow(seed);
-  return toSnapshot(state, seed.username, archivedScore);
+  const { snapshot } = await buildSnapshot(seed);
+  return snapshot;
 };
 
 export const deployNode = async (
@@ -323,14 +335,14 @@ export const submitThroughput = async (
     };
   }
 
-  const { state, archivedScore } = await refreshStateForNow(seed);
-  state.globalScore += count;
-  state.phase = 'active';
-  await saveState(state);
+  const { snapshot } = await buildSnapshot(seed, (state) => {
+    state.globalScore += count;
+    state.phase = 'active';
+  });
 
   return {
     contractVersion: CONTRACT_VERSION,
-    snapshot: toSnapshot(state, seed.username, archivedScore),
+    snapshot,
     scoreDelta: count,
     type: 'throughput_accepted',
   };
@@ -343,11 +355,11 @@ export const resetDailyState = async (): Promise<ResetResponse | null> => {
   }
 
   const now = Date.now();
-  const { state, archivedScore } = await refreshStateForNow({ ...seed, now });
+  const { snapshot, archivedScore } = await buildSnapshot({ ...seed, now });
   return {
     archivedScore: archivedScore ?? 0,
     contractVersion: CONTRACT_VERSION,
-    snapshot: toSnapshot(state, seed.username, archivedScore),
+    snapshot,
     type: 'reset_complete',
   };
 };
