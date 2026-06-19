@@ -3,12 +3,14 @@ import { context } from '@devvit/web/server';
 import {
   buildInitialResponse,
   deployNode,
+  getArchiveHistory,
   resetDailyState,
   submitThroughput,
 } from '../core/resonance-field';
 import type {
   ErrorResponse,
   GameInitResponse,
+  HistoryResponse,
   NodeDeployMessage,
   NodeDeployResponse,
   ResetResponse,
@@ -168,6 +170,48 @@ api.post('/reset', async (c) => {
         type: 'error',
       },
       400
+    );
+  }
+});
+
+api.get('/history', async (c) => {
+  const { postId } = context;
+
+  if (!postId) {
+    console.error('API History Error: postId not found in devvit context');
+    return c.json<ErrorResponse>(
+      {
+        contractVersion: 'resonance-field/v1',
+        message: 'postId is required but missing from context',
+        type: 'error',
+      },
+      400
+    );
+  }
+
+  try {
+    const result = await getArchiveHistory();
+    if (!result) {
+      return c.json<ErrorResponse>(
+        {
+          contractVersion: 'resonance-field/v1',
+          message: 'Failed to retrieve archive history',
+          type: 'error',
+        },
+        500
+      );
+    }
+
+    return c.json<HistoryResponse>(result);
+  } catch (error) {
+    console.error(`API History Error for post ${postId}:`, error);
+    return c.json<ErrorResponse>(
+      {
+        contractVersion: 'resonance-field/v1',
+        message: 'History retrieval failed',
+        type: 'error',
+      },
+      500
     );
   }
 });

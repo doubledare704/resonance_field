@@ -2,6 +2,7 @@ import { Scene, GameObjects } from 'phaser';
 import * as Phaser from 'phaser';
 import {
   deployNodeRequest,
+  requestArchiveHistory,
   requestInitialSnapshot,
   submitThroughputRequest,
 } from '../bridge';
@@ -15,6 +16,7 @@ import {
 } from '../../shared/api';
 import { LOGICAL_FIELD_HEIGHT, LOGICAL_FIELD_WIDTH } from '../../shared/field-layout';
 import type {
+  ArchiveEntry,
   GameSnapshot,
   GlobalScoreUpdatedMessage,
   InitialSnapshotMessage,
@@ -163,6 +165,22 @@ export class Game extends Scene {
   private readonly handleToolKeyOne = () => this.selectTool(NodeType.Attractor);
   private readonly handleToolKeyTwo = () => this.selectTool(NodeType.Repeller);
   private readonly handleToolKeyThree = () => this.selectTool(NodeType.Vortex);
+  private readonly handleArchiveToggle = () => this.toggleArchive();
+  private readonly handleArchiveEscape = () => {
+    if (this.isArchiveOpen) {
+      this.closeArchive();
+    }
+  };
+
+  archiveButton: GameObjects.Text | null = null;
+  archivePanel: Phaser.GameObjects.Container | null = null;
+  archivePanelBg: Phaser.GameObjects.Rectangle | null = null;
+  archiveEntryContainer: Phaser.GameObjects.Container | null = null;
+  archiveScrollY = 0;
+  archiveEntries: ArchiveEntry[] = [];
+  archiveCache: ArchiveEntry[] | null = null;
+  isArchiveOpen = false;
+  isLoadingArchive = false;
 
   constructor() {
     super('Game');
@@ -211,9 +229,19 @@ export class Game extends Scene {
       color: '#ff5b86',
     });
 
+    this.archiveButton = this.add.text(0, 0, 'ARCHIVE', {
+      fontFamily: 'monospace',
+      fontSize: '14px',
+      color: '#00f0ff',
+      backgroundColor: '#101420',
+      padding: { x: 8, y: 4 },
+    }).setInteractive({ useHandCursor: true }).setOrigin(0.5, 0);
+    this.archiveButton.on('pointerdown', () => this.toggleArchive());
+
     this.simulation = new ParticleField(this, this.scale.width, this.scale.height);
     this.dockContainer = this.add.container(0, 0);
     this.toolUi = this.createToolDock();
+    this.createArchivePanel();
 
     this.background.setDepth(0);
     this.atmosphere.setDepth(1);
@@ -227,6 +255,12 @@ export class Game extends Scene {
     this.scoreText.setDepth(9);
     this.timerText.setDepth(9);
     this.nodeQuotaText.setDepth(9);
+    if (this.archiveButton) {
+      this.archiveButton.setDepth(9);
+    }
+    if (this.archivePanel) {
+      this.archivePanel.setDepth(10);
+    }
 
     this.refreshLayout();
     this.scale.on('resize', (gameSize: Phaser.Structs.Size) => {
@@ -239,6 +273,8 @@ export class Game extends Scene {
     this.input.keyboard?.on('keydown-ONE', this.handleToolKeyOne);
     this.input.keyboard?.on('keydown-TWO', this.handleToolKeyTwo);
     this.input.keyboard?.on('keydown-THREE', this.handleToolKeyThree);
+    this.input.keyboard?.on('keydown-H', this.handleArchiveToggle);
+    this.input.keyboard?.on('keydown-ESC', this.handleArchiveEscape);
     this.throughputTimer = this.time.addEvent({
       callback: this.flushThroughput,
       delay: 10_000,
@@ -305,6 +341,9 @@ export class Game extends Scene {
     this.input.keyboard?.off('keydown-ONE', this.handleToolKeyOne);
     this.input.keyboard?.off('keydown-TWO', this.handleToolKeyTwo);
     this.input.keyboard?.off('keydown-THREE', this.handleToolKeyThree);
+    this.input.keyboard?.off('keydown-H', this.handleArchiveToggle);
+    this.input.keyboard?.off('keydown-ESC', this.handleArchiveEscape);
+    this.destroyArchivePanel();
   };
 
   private handleBridgeMessage = (event: MessageEvent) => {
@@ -342,6 +381,19 @@ export class Game extends Scene {
   }
 
   private handlePointerDown = async (pointer: Phaser.Input.Pointer) => {
+    if (this.isArchiveOpen) {
+      if (!this.archivePanel || !this.archivePanelBg) return;
+      const panelX = this.scale.width / 2;
+      const panelY = this.scale.height / 2;
+      const halfW = 200;
+      const halfH = 150;
+      if (pointer.x < panelX - halfW || pointer.x > panelX + halfW ||
+          pointer.y < panelY - halfH || pointer.y > panelY + halfH) {
+        this.closeArchive();
+        return;
+      }
+    }
+
     if (!this.snapshot) {
       return;
     }
@@ -661,6 +713,13 @@ export class Game extends Scene {
     this.scoreText.setPosition(width - UI_LAYOUT.layout.rightMetricsWidth, UI_LAYOUT.layout.scoreY);
     this.timerText.setPosition(width - UI_LAYOUT.layout.rightMetricsWidth, UI_LAYOUT.layout.timerY);
     this.nodeQuotaText.setPosition(width - UI_LAYOUT.layout.rightMetricsWidth, UI_LAYOUT.layout.quotaY);
+    if (this.archiveButton) {
+      this.archiveButton.setPosition(width - UI_LAYOUT.layout.rightMetricsWidth + 120, UI_LAYOUT.layout.quotaY + 2);
+    }
+
+    if (this.isArchiveOpen && this.archivePanel) {
+      this.positionArchivePanel(width, height);
+    }
 
     this.updateToolDock();
   }
@@ -773,6 +832,236 @@ export class Game extends Scene {
     this.snapshot.userActiveNodeIds = userNodes.map((node) => node.id);
     this.snapshot.userActiveNodeCount = userNodes.length;
   }
+
+  private createArchivePanel() {
+    const panelWidth = 400;
+    const panelHeight = 300;
+    const entryHeight = 28;
+    const headerHeight = 36;
+    const contentHeight = panelHeight - headerHeight;
+
+    this.archivePanel = this.add.container(0, 0);
+    this.archivePanel.setDepth(10);
+    this.archivePanel.setVisible(false);
+
+    const bg = this.add.rectangle(0, 0, panelWidth, panelHeight, 0x0d0e15, 0.92);
+    bg.setStrokeStyle(2, 0x00f0ff);
+    this.archivePanel.add(bg);
+
+    const title = this.add.text(0, -panelHeight / 2 + 12, 'ARCHIVE', {
+      fontFamily: 'monospace',
+      fontSize: '16px',
+      color: '#00f0ff',
+    }).setOrigin(0.5, 0);
+    this.archivePanel.add(title);
+
+    const headerLine = this.add.graphics();
+    headerLine.lineStyle(1, 0x00f0ff, 0.3);
+    headerLine.lineBetween(-panelWidth / 2 + 12, -panelHeight / 2 + 30, panelWidth / 2 - 12, -panelHeight / 2 + 30);
+    this.archivePanel.add(headerLine);
+
+    const columnHeaders = this.add.text(0, -panelHeight / 2 + 32, 'Date          Score        Nodes       Seed', {
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      color: '#5a7a8a',
+    }).setOrigin(0.5, 0);
+    this.archivePanel.add(columnHeaders);
+
+    this.archiveEntryContainer = this.add.container(0, 0);
+    this.archivePanel.add(this.archiveEntryContainer);
+
+    const clipX = -panelWidth / 2 + 2;
+    const clipY = -panelHeight / 2 + headerHeight;
+    const clipW = panelWidth - 4;
+    const clipH = contentHeight;
+
+    const maskGraphics = this.add.graphics();
+    maskGraphics.fillStyle(0xffffff);
+    maskGraphics.fillRect(clipX, clipY, clipW, clipH);
+    maskGraphics.setVisible(false);
+    const geometryMask = maskGraphics.createGeometryMask();
+    this.archiveEntryContainer.setMask(geometryMask);
+
+    const emptyText = this.add.text(0, 0, 'No archived days yet', {
+      fontFamily: 'monospace',
+      fontSize: '14px',
+      color: '#5a7a8a',
+    }).setOrigin(0.5);
+    emptyText.setName('archiveEmpty');
+    this.archiveEntryContainer.add(emptyText);
+
+    const dragState = { isDragging: false, startY: 0, startScrollY: 0 };
+
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (!dragState.isDragging || !this.archiveEntryContainer) return;
+      const dy = pointer.y - dragState.startY;
+      const totalH = this.archiveEntries.length * entryHeight;
+      const maxScroll = Math.max(0, totalH - contentHeight);
+      this.archiveScrollY = Phaser.Math.Clamp(dragState.startScrollY + dy, -maxScroll, 0);
+      this.archiveEntryContainer.setY(this.archiveScrollY);
+    });
+
+    this.input.on('pointerup', () => {
+      dragState.isDragging = false;
+    });
+
+    this.input.on('pointerout', () => {
+      dragState.isDragging = false;
+    });
+
+    this.archiveEntryContainer.setInteractive(new Phaser.Geom.Rectangle(
+      -panelWidth / 2,
+      clipY,
+      panelWidth,
+      clipH
+    ), Phaser.Geom.Rectangle.Contains);
+
+    this.archiveEntryContainer.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (!this.archiveEntryContainer) return;
+      const totalH = this.archiveEntries.length * entryHeight;
+      if (totalH > contentHeight) {
+        dragState.isDragging = true;
+        dragState.startY = pointer.y;
+        dragState.startScrollY = this.archiveScrollY;
+      }
+    });
+
+    this.archivePanelBg = bg;
+  }
+
+  private destroyArchivePanel() {
+    this.archivePanel?.destroy();
+    this.archivePanel = null;
+    this.archivePanelBg = null;
+    this.archiveEntryContainer = null;
+  }
+
+  private positionArchivePanel(width: number, height: number) {
+    if (!this.archivePanel) return;
+    this.archivePanel.setPosition(width / 2, height / 2);
+  }
+
+  private toggleArchive() {
+    if (this.isArchiveOpen) {
+      this.closeArchive();
+    } else {
+      this.openArchive();
+    }
+  }
+
+  private openArchive() {
+    this.isArchiveOpen = true;
+    if (this.archivePanel) {
+      this.archivePanel.setVisible(true);
+    }
+    this.positionArchivePanel(this.scale.width, this.scale.height);
+
+    if (this.archiveCache) {
+      this.renderArchiveEntries(this.archiveCache);
+    } else if (!this.isLoadingArchive) {
+      void this.fetchArchive();
+    }
+  }
+
+  private closeArchive() {
+    this.isArchiveOpen = false;
+    if (this.archivePanel) {
+      this.archivePanel.setVisible(false);
+    }
+  }
+
+  private async fetchArchive() {
+    if (this.isLoadingArchive) return;
+    this.isLoadingArchive = true;
+
+    try {
+      const result = await requestArchiveHistory();
+      if (!result.ok) {
+        console.error('Failed to fetch archive history:', result.error.message);
+        this.renderArchiveEntries([]);
+        return;
+      }
+
+      this.archiveCache = result.data.entries;
+      this.renderArchiveEntries(result.data.entries);
+    } catch (error) {
+      console.error('Archive fetch error:', error);
+      this.renderArchiveEntries([]);
+    } finally {
+      this.isLoadingArchive = false;
+    }
+  }
+
+  private renderArchiveEntries(entries: ArchiveEntry[]) {
+    if (!this.archiveEntryContainer) return;
+
+    this.archiveEntries = entries;
+    this.archiveScrollY = 0;
+    this.archiveEntryContainer.setY(0);
+
+    this.archiveEntryContainer.removeAll(true);
+
+    const entryHeight = 28;
+
+    if (entries.length === 0) {
+      const emptyText = this.add.text(0, 0, 'No archived days yet', {
+        fontFamily: 'monospace',
+        fontSize: '14px',
+        color: '#5a7a8a',
+      }).setOrigin(0.5);
+      emptyText.setName('archiveEmpty');
+      this.archiveEntryContainer.add(emptyText);
+      return;
+    }
+
+    const bestScore = Math.max(...entries.map((e) => e.score));
+
+    entries.forEach((entry, index) => {
+      const isBest = entry.score === bestScore && entries.length > 1;
+      const rowBg = this.add.rectangle(
+        0,
+        index * entryHeight,
+        396,
+        entryHeight - 2,
+        isBest ? 0x1a1a00 : index % 2 === 0 ? 0x101420 : 0x0d0e15,
+        0.6
+      );
+      if (isBest) {
+        rowBg.setStrokeStyle(1, 0xffd700, 0.8);
+      }
+      this.archiveEntryContainer!.add(rowBg);
+
+      const dateStr = formatDayKey(entry.dayKey);
+      const scoreColor = isBest ? '#ffd700' : '#ffaa00';
+      const rowText = this.add.text(-180, index * entryHeight, dateStr, {
+        fontFamily: 'monospace',
+        fontSize: '12px',
+        color: '#9cb7c4',
+      }).setOrigin(0, 0.5);
+      this.archiveEntryContainer!.add(rowText);
+
+      const scoreText = this.add.text(-70, index * entryHeight, String(entry.score), {
+        fontFamily: 'monospace',
+        fontSize: '12px',
+        color: scoreColor,
+      }).setOrigin(0, 0.5);
+      this.archiveEntryContainer!.add(scoreText);
+
+      const nodesText = this.add.text(40, index * entryHeight, String(entry.nodeCount), {
+        fontFamily: 'monospace',
+        fontSize: '12px',
+        color: '#9cb7c4',
+      }).setOrigin(0, 0.5);
+      this.archiveEntryContainer!.add(nodesText);
+
+      const seedText = this.add.text(120, index * entryHeight, String(entry.layoutSeed), {
+        fontFamily: 'monospace',
+        fontSize: '12px',
+        color: '#5a7a8a',
+      }).setOrigin(0, 0.5);
+      this.archiveEntryContainer!.add(seedText);
+    });
+  }
 }
 
 const deriveDeployRejectionReason = (message: string) => {
@@ -800,4 +1089,9 @@ const formatCountdown = (targetUtcMs: number) => {
   const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0');
   const seconds = String(totalSeconds % 60).padStart(2, '0');
   return `${hours}:${minutes}:${seconds}`;
+};
+
+const formatDayKey = (dayKey: string) => {
+  const date = new Date(dayKey);
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };

@@ -1,6 +1,7 @@
 import type {
   ErrorResponse,
   GameInitResponse,
+  HistoryResponse,
   NodeDeployMessage,
   NodeDeployResponse,
   ResetResponse,
@@ -73,5 +74,9 @@ export const resetDailyStateRequest = async (): Promise<ApiResult<ResetResponse>
   return requestJson<ResetResponse>('/api/reset', {
     method: 'POST',
   });
+};
+
+export const requestArchiveHistory = async (): Promise<ApiResult<HistoryResponse>> => {
+  return requestJson<HistoryResponse>('/api/history');
 };
 

@@ -206,6 +206,18 @@ export type ThroughputResponse = {
   scoreDelta: number;
 };
 
+export type ArchiveEntry = {
+  archivedAt: number;
+  score: number;
+  nodeCount: number;
+  dayKey: string;
+  layoutSeed: number;
+};
+
+export type HistoryResponse = {
+  entries: ArchiveEntry[];
+};
+
 export type ResetResponse = {
   type: 'reset_complete';
   contractVersion: typeof CONTRACT_VERSION;

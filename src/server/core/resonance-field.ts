@@ -9,10 +9,12 @@ import {
   NodeType,
 } from '../../shared/api';
 import type {
+  ArchiveEntry,
   GameNode,
   GameInitResponse,
   GameSnapshot,
   GameState,
+  HistoryResponse,
   NodeDeployMessage,
   ResetResponse,
   SnapshotSeed,
@@ -23,14 +25,6 @@ import { isValidDeployPosition } from './field-validation';
 
 const STATE_KEY_PREFIX = 'resonance:state:';
 const HISTORY_KEY_PREFIX = 'resonance:history:';
-
-type ArchiveEntry = {
-  archivedAt: number;
-  score: number;
-  nodeCount: number;
-  dayKey?: string;
-  layoutSeed?: number;
-};
 
 type DeployResult = {
   snapshot: GameSnapshot;
@@ -177,8 +171,8 @@ const archiveState = async (state: GameState, archivedAt: number) => {
     archivedAt,
     score: state.globalScore,
     nodeCount: state.nodes.length,
-    dayKey: state.fieldLayout?.dayKey,
-    layoutSeed: state.fieldLayout?.seed,
+    dayKey: state.fieldLayout?.dayKey ?? '',
+    layoutSeed: state.fieldLayout?.seed ?? 0,
   });
   await redis.set(historyKey, JSON.stringify(history));
 };
@@ -357,6 +351,24 @@ export const resetDailyState = async (): Promise<ResetResponse | null> => {
     snapshot: toSnapshot(state, seed.username),
     type: 'reset_complete',
   };
+};
+
+export const getArchiveHistory = async (): Promise<HistoryResponse | null> => {
+  const postId = getPostId();
+  if (!postId) {
+    return null;
+  }
+
+  const historyKey = getHistoryKey(postId);
+  const rawHistory = await redis.get(historyKey);
+  const history = rawHistory ? (JSON.parse(rawHistory) as ArchiveEntry[]) : [];
+
+  const sorted = history
+    .filter((entry) => typeof entry.dayKey === 'string' && typeof entry.layoutSeed === 'number')
+    .sort((a, b) => b.archivedAt - a.archivedAt)
+    .slice(0, 10);
+
+  return { entries: sorted };
 };
 
 export const buildInitialResponse = async (): Promise<GameInitResponse | null> => {
