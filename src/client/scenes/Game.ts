@@ -81,24 +81,59 @@ const UI_LAYOUT = {
     repelRadiusRatio: 0.18,
   },
   dock: {
+    activeIconArcEndDeg: 330,
+    activeIconArcRadius: 25,
+    activeIconArcStartDeg: 30,
+    activeIconCircleRadii: [18, 28, 38],
+    cardDetailWidth: 148,
     cardHeight: 118,
     cardWidth: 168,
+    cardTitleOffsetX: -72,
+    cardTitleOffsetY: -36,
+    cardDetailOffsetX: -72,
+    cardDetailOffsetY: -4,
     iconCenterY: -8,
+    iconInactiveArcRadius: 21,
+    iconInactiveCircleRadii: [16, 26, 36],
+    iconTriangleBottomY: 16,
+    iconTriangleTopY: -20,
+    iconTriangleLeftX: -22,
+    iconTriangleRightX: 22,
     panelYFromBottom: 104,
     railHeight: 108,
     railInsetBottom: 132,
     railInsetInner: 122,
     spacing: 200,
+    toolRejectedFillAlpha: 0.22,
+    toolSelectedBorderWidth: 3,
+    toolSelectedFillAlpha: 0.1,
+    toolSelectedStrokeWidth: 3,
   },
   frame: {
+    innerCornerRadius: 18,
     outerInset: 18,
+    outerCornerRadius: 24,
     innerInset: 28,
   },
   layout: {
     leftMargin: 32,
     rightMetricsWidth: 240,
+    scoreY: 28,
+    timerY: 58,
+    quotaY: 88,
     subtitleY: 72,
     statusY: 106,
+    titleY: 26,
+  },
+  dockRail: {
+    backgroundAlpha: 0.88,
+    backgroundInset: 24,
+    innerBackgroundHeight: 88,
+    innerBorderCornerRadius: 18,
+    innerBorderInset: 34,
+    innerBorderWidthInset: 68,
+    strokeAlpha: 0.5,
+    innerStrokeAlpha: 0.18,
   },
 } as const;
 
@@ -217,39 +252,46 @@ export class Game extends Scene {
   }
 
   private createToolDock(): Record<NodeType, ToolUi> {
-    const output = {} as Record<NodeType, ToolUi>;
-    const { cardHeight, cardWidth, spacing } = UI_LAYOUT.dock;
+    const { spacing } = UI_LAYOUT.dock;
+    const attractorCard = this.createToolDockCard(TOOL_CARDS[0]!, -spacing);
+    const repellerCard = this.createToolDockCard(TOOL_CARDS[1]!, 0);
+    const vortexCard = this.createToolDockCard(TOOL_CARDS[2]!, spacing);
 
-    TOOL_CARDS.forEach((card, index) => {
-      const x = (index - 1) * spacing;
-      const panel = this.add.container(x, 0);
-      const badge = this.add.rectangle(0, 0, cardWidth, cardHeight, 0x101420, 0.92);
-      const title = this.add.text(-72, -36, card.label, {
-        fontFamily: 'Arial Black',
-        fontSize: '18px',
-        color: '#f6ffff',
-      });
-      const detail = this.add.text(-72, -4, card.description, {
-        fontFamily: 'monospace',
-        fontSize: '12px',
-        color: '#9cb7c4',
-        wordWrap: { width: 148 },
-      });
-      const icon = this.add.graphics();
-      const selectHitArea = this.add.zone(0, 0, cardWidth, cardHeight).setOrigin(0.5).setInteractive({
-        useHandCursor: true,
-      });
+    return {
+      [NodeType.Attractor]: attractorCard,
+      [NodeType.Repeller]: repellerCard,
+      [NodeType.Vortex]: vortexCard,
+    };
+  }
 
-      selectHitArea.on('pointerdown', () => {
-        this.selectTool(card.key);
-      });
-
-      panel.add([badge, icon, title, detail, selectHitArea]);
-      this.dockContainer.add(panel);
-      output[card.key] = { badge, detail, icon, panel, selectHitArea, title };
+  private createToolDockCard(card: ToolCard, x: number): ToolUi {
+    const { cardDetailOffsetX, cardDetailOffsetY, cardDetailWidth, cardHeight, cardTitleOffsetX, cardTitleOffsetY, cardWidth } =
+      UI_LAYOUT.dock;
+    const panel = this.add.container(x, 0);
+    const badge = this.add.rectangle(0, 0, cardWidth, cardHeight, 0x101420, 0.92);
+    const title = this.add.text(cardTitleOffsetX, cardTitleOffsetY, card.label, {
+      fontFamily: 'Arial Black',
+      fontSize: '18px',
+      color: '#f6ffff',
+    });
+    const detail = this.add.text(cardDetailOffsetX, cardDetailOffsetY, card.description, {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#9cb7c4',
+      wordWrap: { width: cardDetailWidth },
+    });
+    const icon = this.add.graphics();
+    const selectHitArea = this.add.zone(0, 0, cardWidth, cardHeight).setOrigin(0.5).setInteractive({
+      useHandCursor: true,
     });
 
-    return output;
+    selectHitArea.on('pointerdown', () => {
+      this.selectTool(card.key);
+    });
+
+    panel.add([badge, icon, title, detail, selectHitArea]);
+    this.dockContainer.add(panel);
+    return { badge, detail, icon, panel, selectHitArea, title };
   }
 
   private handleShutdown = () => {
@@ -497,6 +539,24 @@ export class Game extends Scene {
 
   private updateToolDock() {
     const activeTool = this.snapshot?.selectedTool ?? this.selectedTool;
+    const {
+      activeIconArcEndDeg,
+      activeIconArcRadius,
+      activeIconArcStartDeg,
+      activeIconCircleRadii,
+      iconCenterY,
+      iconInactiveArcRadius,
+      iconInactiveCircleRadii,
+      iconTriangleBottomY,
+      iconTriangleLeftX,
+      iconTriangleRightX,
+      iconTriangleTopY,
+      panelYFromBottom,
+      toolRejectedFillAlpha,
+      toolSelectedBorderWidth,
+      toolSelectedFillAlpha,
+      toolSelectedStrokeWidth,
+    } = UI_LAYOUT.dock;
 
     TOOL_CARDS.forEach((card, index) => {
       const ui = this.toolUi[card.key];
@@ -504,26 +564,59 @@ export class Game extends Scene {
       const isRejected = card.key === this.rejectedTool;
       const x = (index - 1) * UI_LAYOUT.dock.spacing;
 
-      ui.panel.setPosition(this.scale.width / 2 + x, this.scale.height - UI_LAYOUT.dock.panelYFromBottom);
-      ui.badge.setFillStyle(isRejected ? 0xff0055 : card.accent, isActive ? 0.2 : 0.12);
-      ui.badge.setStrokeStyle(isRejected ? 3 : isActive ? 3 : 1, isRejected ? 0xff0055 : card.accent, isRejected || isActive ? 1 : 0.4);
+      ui.panel.setPosition(this.scale.width / 2 + x, this.scale.height - panelYFromBottom);
+      ui.badge.setFillStyle(
+        isRejected ? 0xff0055 : card.accent,
+        isRejected ? toolRejectedFillAlpha : isActive ? toolSelectedFillAlpha : 0.12
+      );
+      ui.badge.setStrokeStyle(
+        isRejected ? 4 : isActive ? toolSelectedBorderWidth : 1,
+        isRejected ? 0xff0055 : card.accent,
+        isRejected || isActive ? 1 : 0.4
+      );
       ui.title.setColor(isActive ? '#ffffff' : '#d8e1e8');
       ui.detail.setColor(isActive ? '#f7fbff' : '#9cb7c4');
 
       ui.icon.clear();
-      ui.icon.lineStyle(isRejected ? 4 : isActive ? 4 : 2, isRejected ? 0xff0055 : card.accent, 1);
-      ui.icon.fillStyle(isRejected ? 0xff0055 : card.accent, isActive ? 0.22 : 0.1);
+      ui.icon.lineStyle(
+        isRejected ? 4 : isActive ? toolSelectedStrokeWidth : 2,
+        isRejected ? 0xff0055 : card.accent,
+        1
+      );
+      ui.icon.fillStyle(isRejected ? 0xff0055 : card.accent, isActive ? toolSelectedFillAlpha : 0.1);
 
       if (card.key === NodeType.Attractor) {
-        ui.icon.strokeCircle(0, UI_LAYOUT.dock.iconCenterY, isActive ? 18 : 16);
-        ui.icon.strokeCircle(0, UI_LAYOUT.dock.iconCenterY, isActive ? 28 : 26);
-        ui.icon.strokeCircle(0, UI_LAYOUT.dock.iconCenterY, isActive ? 38 : 36);
+        const radii = isActive ? activeIconCircleRadii : iconInactiveCircleRadii;
+        ui.icon.strokeCircle(0, iconCenterY, radii[0]);
+        ui.icon.strokeCircle(0, iconCenterY, radii[1]);
+        ui.icon.strokeCircle(0, iconCenterY, radii[2]);
       } else if (card.key === NodeType.Repeller) {
-        ui.icon.strokeTriangle(-22, 16, 0, -20, 22, 16);
-        ui.icon.fillTriangle(-22, 16, 0, -20, 22, 16);
+        ui.icon.strokeTriangle(
+          iconTriangleLeftX,
+          iconTriangleBottomY,
+          0,
+          iconTriangleTopY,
+          iconTriangleRightX,
+          iconTriangleBottomY
+        );
+        ui.icon.fillTriangle(
+          iconTriangleLeftX,
+          iconTriangleBottomY,
+          0,
+          iconTriangleTopY,
+          iconTriangleRightX,
+          iconTriangleBottomY
+        );
       } else {
         ui.icon.beginPath();
-        ui.icon.arc(0, -4, isActive ? 25 : 21, Phaser.Math.DegToRad(30), Phaser.Math.DegToRad(330), false);
+        ui.icon.arc(
+          0,
+          -4,
+          isActive ? activeIconArcRadius : iconInactiveArcRadius,
+          Phaser.Math.DegToRad(activeIconArcStartDeg),
+          Phaser.Math.DegToRad(activeIconArcEndDeg),
+          false
+        );
         ui.icon.strokePath();
       }
     });
@@ -551,12 +644,12 @@ export class Game extends Scene {
     this.drawFrame(width, height);
     this.drawDockRail(width, height);
 
-    this.titleText.setPosition(32, 26);
-    this.subtitleText.setPosition(34, 72);
-    this.statusText.setPosition(34, 106);
-    this.scoreText.setPosition(width - 240, 28);
-    this.timerText.setPosition(width - 240, 58);
-    this.nodeQuotaText.setPosition(width - 240, 88);
+    this.titleText.setPosition(UI_LAYOUT.layout.leftMargin, UI_LAYOUT.layout.titleY);
+    this.subtitleText.setPosition(UI_LAYOUT.layout.leftMargin + 2, UI_LAYOUT.layout.subtitleY);
+    this.statusText.setPosition(UI_LAYOUT.layout.leftMargin + 2, UI_LAYOUT.layout.statusY);
+    this.scoreText.setPosition(width - UI_LAYOUT.layout.rightMetricsWidth, UI_LAYOUT.layout.scoreY);
+    this.timerText.setPosition(width - UI_LAYOUT.layout.rightMetricsWidth, UI_LAYOUT.layout.timerY);
+    this.nodeQuotaText.setPosition(width - UI_LAYOUT.layout.rightMetricsWidth, UI_LAYOUT.layout.quotaY);
 
     this.updateToolDock();
   }
@@ -564,11 +657,23 @@ export class Game extends Scene {
   private drawAtmosphere(width: number, height: number) {
     this.atmosphere.clear();
     this.atmosphere.fillStyle(0x00f0ff, 0.08);
-    this.atmosphere.fillCircle(width * 0.18, height * 0.22, Math.min(width, height) * UI_LAYOUT.atmosphere.attractorRadiusRatio);
+    this.atmosphere.fillCircle(
+      width * 0.18,
+      height * 0.22,
+      Math.min(width, height) * UI_LAYOUT.atmosphere.attractorRadiusRatio
+    );
     this.atmosphere.fillStyle(0xff0055, 0.08);
-    this.atmosphere.fillCircle(width * 0.82, height * 0.18, Math.min(width, height) * UI_LAYOUT.atmosphere.repelRadiusRatio);
+    this.atmosphere.fillCircle(
+      width * 0.82,
+      height * 0.18,
+      Math.min(width, height) * UI_LAYOUT.atmosphere.repelRadiusRatio
+    );
     this.atmosphere.fillStyle(0xffaa00, 0.08);
-    this.atmosphere.fillCircle(width * 0.56, height * 0.82, Math.min(width, height) * UI_LAYOUT.atmosphere.helixRadiusRatio);
+    this.atmosphere.fillCircle(
+      width * 0.56,
+      height * 0.82,
+      Math.min(width, height) * UI_LAYOUT.atmosphere.helixRadiusRatio
+    );
   }
 
   private drawGrid(width: number, height: number) {
@@ -593,7 +698,7 @@ export class Game extends Scene {
       UI_LAYOUT.frame.outerInset,
       width - UI_LAYOUT.frame.outerInset * 2,
       height - UI_LAYOUT.dock.railInsetBottom - UI_LAYOUT.frame.outerInset,
-      24
+      UI_LAYOUT.frame.outerCornerRadius
     );
     this.playfieldFrame.lineStyle(1, 0xff0055, 0.28);
     this.playfieldFrame.strokeRoundedRect(
@@ -601,18 +706,36 @@ export class Game extends Scene {
       UI_LAYOUT.frame.innerInset,
       width - UI_LAYOUT.frame.innerInset * 2,
       height - UI_LAYOUT.dock.railInsetInner - UI_LAYOUT.frame.innerInset,
-      18
+      UI_LAYOUT.frame.innerCornerRadius
     );
   }
 
   private drawDockRail(width: number, height: number) {
     this.dockRail.clear();
-    this.dockRail.fillStyle(0x0b1019, 0.88);
-    this.dockRail.fillRoundedRect(24, height - UI_LAYOUT.dock.railInsetBottom, width - 48, UI_LAYOUT.dock.railHeight, 22);
-    this.dockRail.lineStyle(1, 0x00f0ff, 0.5);
-    this.dockRail.strokeRoundedRect(24, height - UI_LAYOUT.dock.railInsetBottom, width - 48, UI_LAYOUT.dock.railHeight, 22);
+    this.dockRail.fillStyle(0x0b1019, UI_LAYOUT.dockRail.backgroundAlpha);
+    this.dockRail.fillRoundedRect(
+      UI_LAYOUT.dockRail.backgroundInset,
+      height - UI_LAYOUT.dock.railInsetBottom,
+      width - UI_LAYOUT.dockRail.backgroundInset * 2,
+      UI_LAYOUT.dock.railHeight,
+      UI_LAYOUT.dock.railHeight / 4
+    );
+    this.dockRail.lineStyle(1, 0x00f0ff, UI_LAYOUT.dockRail.strokeAlpha);
+    this.dockRail.strokeRoundedRect(
+      UI_LAYOUT.dockRail.backgroundInset,
+      height - UI_LAYOUT.dock.railInsetBottom,
+      width - UI_LAYOUT.dockRail.backgroundInset * 2,
+      UI_LAYOUT.dock.railHeight,
+      UI_LAYOUT.dock.railHeight / 4
+    );
     this.dockRail.lineStyle(1, 0xff0055, 0.18);
-    this.dockRail.strokeRoundedRect(34, height - UI_LAYOUT.dock.railInsetInner, width - 68, 88, 18);
+    this.dockRail.strokeRoundedRect(
+      UI_LAYOUT.dockRail.innerBorderInset,
+      height - UI_LAYOUT.dock.railInsetInner,
+      width - UI_LAYOUT.dockRail.innerBorderWidthInset,
+      UI_LAYOUT.dockRail.innerBackgroundHeight,
+      UI_LAYOUT.dockRail.innerBorderCornerRadius
+    );
   }
 
   private pruneExpiredNodes() {
