@@ -12,10 +12,10 @@ It separates work that is already done from the next pieces still planned.
 - Step 5: Added the particle simulation and throughput batching loop.
 - Review cleanup: Replaced raw protocol strings with enums and tightened layout constants in `src/client/scenes/Game.ts`.
 - Review cleanup: Replaced raw node type strings with enums in `src/client/simulation.ts` and server validation.
+- Step 6: Added procedural daily field generation for the new UTC reset layout.
 
 ## Planned
 
-- Step 6: Add procedural daily field generation for the new UTC reset layout.
 - Step 7: Build a leaderboard or archive UI for past daily scores.
 - Step 8: Polish the reset rollover experience on the client.
 - Step 9: Harden realtime sync and Devvit bridge behavior under live playtest conditions.

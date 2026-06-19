@@ -18,6 +18,8 @@ import type {
   SnapshotSeed,
   ThroughputResponse,
 } from '../../shared/api';
+import { generateDailyField } from './field-generator';
+import { isValidDeployPosition } from './field-validation';
 
 const STATE_KEY_PREFIX = 'resonance:state:';
 const HISTORY_KEY_PREFIX = 'resonance:history:';
@@ -26,6 +28,8 @@ type ArchiveEntry = {
   archivedAt: number;
   score: number;
   nodeCount: number;
+  dayKey?: string;
+  layoutSeed?: number;
 };
 
 type DeployResult = {
@@ -70,6 +74,7 @@ const getNextDailyResetAt = (now: number) => {
 
 const getEmptyState = (seed: SnapshotSeed): GameState => {
   const now = seed.now ?? Date.now();
+  const fieldLayout = seed.fieldLayout ?? generateDailyField(seed.postId, getCurrentUtcDayStart(now));
   return {
     contractVersion: CONTRACT_VERSION,
     postId: seed.postId,
@@ -78,6 +83,7 @@ const getEmptyState = (seed: SnapshotSeed): GameState => {
     dailyResetAtUtc: getNextDailyResetAt(now),
     globalScore: 0,
     nodes: [],
+    fieldLayout,
   };
 };
 
@@ -97,6 +103,7 @@ const toSnapshot = (state: GameState, username: string): GameSnapshot => {
     userActiveNodeCount: userNodes.length,
     userMaxActiveNodes: MAX_ACTIVE_NODES,
     selectedTool: NodeType.Attractor,
+    fieldLayout: state.fieldLayout,
   };
 };
 
@@ -113,6 +120,12 @@ const parseState = (value: string | null | undefined, seed: SnapshotSeed): GameS
       typeof parsed.postId === 'string' &&
       Array.isArray(parsed.nodes)
     ) {
+      const now = seed.now ?? Date.now();
+      let fieldLayout = parsed.fieldLayout;
+      if (!fieldLayout) {
+        fieldLayout = generateDailyField(parsed.postId, getCurrentUtcDayStart(now));
+      }
+
       return {
         contractVersion: CONTRACT_VERSION,
         postId: parsed.postId,
@@ -129,7 +142,7 @@ const parseState = (value: string | null | undefined, seed: SnapshotSeed): GameS
             : 'idle',
         dailyResetAtUtc: isFiniteNumber(parsed.dailyResetAtUtc)
           ? parsed.dailyResetAtUtc
-          : getNextDailyResetAt(seed.now ?? Date.now()),
+          : getNextDailyResetAt(now),
         globalScore: isFiniteNumber(parsed.globalScore) ? parsed.globalScore : 0,
         nodes: parsed.nodes.filter(
           (node): node is GameNode =>
@@ -142,6 +155,7 @@ const parseState = (value: string | null | undefined, seed: SnapshotSeed): GameS
             isFiniteNumber(node.createdAt) &&
             isFiniteNumber(node.expiresAt)
         ),
+        fieldLayout,
       };
     }
   } catch (error) {
@@ -163,6 +177,8 @@ const archiveState = async (state: GameState, archivedAt: number) => {
     archivedAt,
     score: state.globalScore,
     nodeCount: state.nodes.length,
+    dayKey: state.fieldLayout?.dayKey,
+    layoutSeed: state.fieldLayout?.seed,
   });
   await redis.set(historyKey, JSON.stringify(history));
 };
@@ -194,6 +210,7 @@ const refreshStateForNow = async (seed: SnapshotSeed): Promise<FreshStateResult>
     state.globalScore = 0;
     state.nodes = [];
     state.dailyResetAtUtc = getNextDailyResetAt(now);
+    state.fieldLayout = generateDailyField(state.postId, getCurrentUtcDayStart(now));
   } else {
     pruneExpiredNodes(state, now);
   }
@@ -254,6 +271,13 @@ export const deployNode = async (
     return {
       error: NodeDeployRejectionReason.InvalidPosition,
       message: 'Node position must be finite numbers',
+    };
+  }
+
+  if (state.fieldLayout && !isValidDeployPosition(state.fieldLayout, input.x, input.y)) {
+    return {
+      error: NodeDeployRejectionReason.InvalidPosition,
+      message: 'Cannot deploy node inside obstacles, hazards, or sink',
     };
   }
 

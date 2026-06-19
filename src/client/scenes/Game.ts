@@ -13,6 +13,7 @@ import {
   NodeType,
   ScoreUpdateReason,
 } from '../../shared/api';
+import { LOGICAL_FIELD_HEIGHT, LOGICAL_FIELD_WIDTH } from '../../shared/field-layout';
 import type {
   GameSnapshot,
   GlobalScoreUpdatedMessage,
@@ -345,10 +346,13 @@ export class Game extends Scene {
       return;
     }
 
+    const logicalX = (pointer.worldX / this.scale.width) * LOGICAL_FIELD_WIDTH;
+    const logicalY = (pointer.worldY / this.scale.height) * LOGICAL_FIELD_HEIGHT;
+
     const result = await deployNodeRequest({
       type: this.selectedTool,
-      x: pointer.worldX,
-      y: pointer.worldY,
+      x: logicalX,
+      y: logicalY,
     });
 
     if (!result.ok) {
@@ -474,8 +478,14 @@ export class Game extends Scene {
   }
 
   private applySnapshot(message: InitialSnapshotMessage) {
+    const prevLayout = this.snapshot?.fieldLayout;
     this.snapshot = { ...message.data, nodes: [...message.data.nodes] };
     this.selectedTool = this.snapshot.selectedTool;
+
+    if (this.snapshot.fieldLayout && (!prevLayout || prevLayout.dayKey !== this.snapshot.fieldLayout.dayKey)) {
+      this.simulation.setFieldLayout(this.snapshot.fieldLayout);
+    }
+
     this.reconcileSnapshotDerivedFields();
     this.statusText.setText(UI_TEXT.initialSnapshot(this.snapshot.username, this.snapshot.subredditName));
     this.renderSnapshot();
@@ -638,6 +648,7 @@ export class Game extends Scene {
   private refreshLayout(width = this.scale.width, height = this.scale.height) {
     this.cameras.resize(width, height);
     this.background.setSize(width, height);
+    this.simulation.setSize(width, height);
 
     this.drawAtmosphere(width, height);
     this.drawGrid(width, height);

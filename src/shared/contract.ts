@@ -3,6 +3,20 @@ export const MAX_ACTIVE_NODES = 3;
 export const NODE_LIFESPAN_MS = 60_000;
 export const DAILY_RESET_HOUR_UTC = 0;
 
+export type FieldRect = { x: number; y: number; w: number; h: number };
+export type FieldCircle = { x: number; y: number; r: number };
+
+export type FieldLayout = {
+  dayKey: string;
+  seed: number;
+  templateId: number;
+  bounds: FieldRect;
+  obstacles: FieldRect[];
+  hazards: FieldCircle[];
+  sink: FieldCircle;
+  spawnBand: FieldRect;
+};
+
 export enum NodeType {
   Attractor = 'ATTRACTOR',
   Repeller = 'REPELLER',
@@ -66,6 +80,7 @@ export type GameSnapshot = {
   userActiveNodeCount: number;
   userMaxActiveNodes: typeof MAX_ACTIVE_NODES;
   selectedTool: NodeType;
+  fieldLayout?: FieldLayout | undefined;
 };
 
 export type GameState = {
@@ -76,6 +91,7 @@ export type GameState = {
   dailyResetAtUtc: number;
   globalScore: number;
   nodes: GameNode[];
+  fieldLayout?: FieldLayout | undefined;
 };
 
 export type RequestSyncMessage = {
@@ -208,6 +224,7 @@ export type SnapshotSeed = {
   username: string;
   subredditName: string | null;
   now?: number;
+  fieldLayout?: FieldLayout;
 };
 
 export const createEmptySnapshot = ({
@@ -215,6 +232,7 @@ export const createEmptySnapshot = ({
   username,
   subredditName,
   now = Date.now(),
+  fieldLayout,
 }: SnapshotSeed): GameSnapshot => {
   return {
     contractVersion: CONTRACT_VERSION,
@@ -229,5 +247,6 @@ export const createEmptySnapshot = ({
     userActiveNodeCount: 0,
     userMaxActiveNodes: MAX_ACTIVE_NODES,
     selectedTool: NodeType.Attractor,
+    fieldLayout,
   };
 };
