@@ -40,8 +40,6 @@ export enum NodeDeployRejectionReason {
 }
 
 export enum BridgeMessageType {
-  RequestSync = 'REQUEST_SYNC',
-  SelectTool = 'SELECT_TOOL',
   NodeDeploy = 'NODE_DEPLOY',
   SubmitThroughput = 'SUBMIT_THROUGHPUT',
   InitialSnapshot = 'INITIAL_SNAPSHOT',
@@ -95,20 +93,6 @@ export type GameState = {
   fieldLayout?: FieldLayout | undefined;
 };
 
-export type RequestSyncMessage = {
-  type: BridgeMessageType.RequestSync;
-  data?: {
-    postId?: string;
-  };
-};
-
-export type SelectToolMessage = {
-  type: BridgeMessageType.SelectTool;
-  data: {
-    tool: NodeType;
-  };
-};
-
 export type NodeDeployMessage = {
   type: BridgeMessageType.NodeDeploy;
   data: {
@@ -124,12 +108,6 @@ export type SubmitThroughputMessage = {
     count: number;
   };
 };
-
-export type ClientBridgeMessage =
-  | RequestSyncMessage
-  | SelectToolMessage
-  | NodeDeployMessage
-  | SubmitThroughputMessage;
 
 export type InitialSnapshotMessage = {
   type: BridgeMessageType.InitialSnapshot;
@@ -183,8 +161,6 @@ export type ServerBridgeMessage =
   | GlobalScoreUpdatedMessage
   | NodeDeployRejectedMessage
   | SyncErrorMessage;
-
-export type BridgeMessage = ClientBridgeMessage | ServerBridgeMessage;
 
 export type GameInitResponse = {
   type: 'snapshot';

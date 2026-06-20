@@ -15,11 +15,11 @@ It separates work that is already done from the next pieces still planned.
 - Step 6: Added procedural daily field generation for the new UTC reset layout.
 - Step 7: Build a leaderboard or archive UI for past daily scores.
 - Step 8: Polish the reset rollover experience on the client.
+- Step 9: Harden realtime sync and Devvit bridge behavior under live playtest conditions.
 
 ## Planned
 
-- Step 9: Harden realtime sync and Devvit bridge behavior under live playtest conditions.
-- Step 10: Tune particle simulation balance and small-screen performance.
+- Step 10: Tune particle simulation balance and small-screen, tablet, desktop performance.
 - Step 11: Add automated tests for quota enforcement, FIFO removal, expiry, reset, and throughput batching.
 - Step 12: Finish final UI polish and mobile spacing adjustments.
 

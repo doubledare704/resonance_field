@@ -25,6 +25,7 @@ import type {
   NodeDeployResponse,
   NodeRemovedMessage,
   ServerBridgeMessage,
+  ThroughputResponse,
 } from '../../shared/api';
 
 type ToolCard = {
@@ -42,6 +43,10 @@ type ToolUi = {
   icon: Phaser.GameObjects.Graphics;
   selectHitArea: Phaser.GameObjects.Zone;
 };
+
+const MAX_BACKOFF_ATTEMPTS = 3;
+const POLL_INTERVAL_MS = 5_000;
+const CONNECTIVITY_FAILURE_THRESHOLD = 3;
 
 const TOOL_CARDS: ToolCard[] = [
   {
@@ -64,6 +69,13 @@ const TOOL_CARDS: ToolCard[] = [
   },
 ];
 
+
+type ThroughputRetryEntry = {
+  count: number;
+  attempts: number;
+  nextRetryAt: number;
+};
+
 const UI_TEXT = {
   defaultStatus: 'Waiting for contract snapshot...',
   deployFailed: 'Node deployment rejected',
@@ -75,6 +87,11 @@ const UI_TEXT = {
   toolPrefix: 'TOOLS',
   snapshotFailed: 'Snapshot load failed. Waiting for bridge sync...',
   subtitle: 'A cooperative fluid field tuned by the subreddit',
+  offline: 'OFFLINE',
+  reconnecting: 'RECONNECTING\u2026',
+  syncStalled: 'SYNC STALLED',
+  retrying: '\u23F3',
+  pending: '\u231B',
 } as const;
 
 const UI_LAYOUT = {
@@ -159,9 +176,20 @@ export class Game extends Scene {
   snapshot: GameSnapshot | null = null;
   localPendingScore = 0;
   private throughputTimer?: Phaser.Time.TimerEvent;
+  private pollTimer?: Phaser.Time.TimerEvent;
   private rejectionResetTimer: Phaser.Time.TimerEvent | null = null;
   private selectedTool: NodeType = NodeType.Attractor;
   private rejectedTool: NodeType | null = null;
+  private throughputRetryQueue: ThroughputRetryEntry[] = [];
+  private deployQueue: Array<{ type: NodeType; x: number; y: number }> = [];
+  private deployInFlight = false;
+  private currentDeployItem: { type: NodeType; x: number; y: number } | null = null;
+  private isOnline = navigator.onLine;
+  private consecutiveNetworkFailures = 0;
+  private connectivityIndicator!: GameObjects.Text;
+  private syncSpinner!: GameObjects.Text;
+  private pendingDeployIndicator!: GameObjects.Text;
+  private statusTimestamp = 0;
   private readonly handleToolKeyOne = () => this.selectTool(NodeType.Attractor);
   private readonly handleToolKeyTwo = () => this.selectTool(NodeType.Repeller);
   private readonly handleToolKeyThree = () => this.selectTool(NodeType.Vortex);
@@ -170,6 +198,14 @@ export class Game extends Scene {
     if (this.isArchiveOpen) {
       this.closeArchive();
     }
+  };
+  private readonly handleOnline = () => {
+    this.isOnline = true;
+    this.onConnectivityRestored();
+  };
+  private readonly handleOffline = () => {
+    this.isOnline = false;
+    this.onConnectivityLost();
   };
 
   archiveButton: GameObjects.Text | null = null;
@@ -238,6 +274,22 @@ export class Game extends Scene {
     }).setInteractive({ useHandCursor: true }).setOrigin(0.5, 0);
     this.archiveButton.on('pointerdown', () => this.toggleArchive());
 
+    this.connectivityIndicator = this.add.text(8, 8, '', {
+      fontFamily: 'monospace',
+      fontSize: '10px',
+      color: '#ff0055',
+    }).setVisible(false);
+    this.syncSpinner = this.add.text(0, 0, '', {
+      fontFamily: 'monospace',
+      fontSize: '14px',
+      color: '#ffaa00',
+    }).setVisible(false);
+    this.pendingDeployIndicator = this.add.text(0, 0, '', {
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      color: '#00f0ff',
+    }).setVisible(false);
+
     this.simulation = new ParticleField(this, this.scale.width, this.scale.height);
     this.dockContainer = this.add.container(0, 0);
     this.toolUi = this.createToolDock();
@@ -255,6 +307,9 @@ export class Game extends Scene {
     this.scoreText.setDepth(9);
     this.timerText.setDepth(9);
     this.nodeQuotaText.setDepth(9);
+    this.connectivityIndicator.setDepth(9);
+    this.syncSpinner.setDepth(9);
+    this.pendingDeployIndicator.setDepth(9);
     if (this.archiveButton) {
       this.archiveButton.setDepth(9);
     }
@@ -267,7 +322,6 @@ export class Game extends Scene {
       this.refreshLayout(gameSize.width, gameSize.height);
     });
 
-    window.addEventListener('message', this.handleBridgeMessage);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown);
     this.input.on('pointerdown', this.handlePointerDown);
     this.input.keyboard?.on('keydown-ONE', this.handleToolKeyOne);
@@ -280,10 +334,14 @@ export class Game extends Scene {
       delay: 10_000,
       loop: true,
     });
+    this.pollTimer = this.time.addEvent({
+      callback: this.pollServerState,
+      delay: POLL_INTERVAL_MS,
+      loop: true,
+    });
 
-    if (window.parent && window.parent !== window) {
-      window.parent.postMessage({ type: BridgeMessageType.RequestSync }, '*');
-    }
+    window.addEventListener('online', this.handleOnline);
+    window.addEventListener('offline', this.handleOffline);
 
     void this.loadInitialSnapshot();
   }
@@ -333,10 +391,16 @@ export class Game extends Scene {
 
   private handleShutdown = () => {
     this.throughputTimer?.remove(false);
+    this.pollTimer?.remove(false);
     this.rejectionResetTimer?.remove(false);
     this.rejectionResetTimer = null;
     this.simulation.destroy();
-    window.removeEventListener('message', this.handleBridgeMessage);
+    window.removeEventListener('online', this.handleOnline);
+    window.removeEventListener('offline', this.handleOffline);
+    this.throughputRetryQueue = [];
+    this.deployQueue = [];
+    this.deployInFlight = false;
+    this.currentDeployItem = null;
     this.input.off('pointerdown', this.handlePointerDown);
     this.input.keyboard?.off('keydown-ONE', this.handleToolKeyOne);
     this.input.keyboard?.off('keydown-TWO', this.handleToolKeyTwo);
@@ -344,15 +408,6 @@ export class Game extends Scene {
     this.input.keyboard?.off('keydown-H', this.handleArchiveToggle);
     this.input.keyboard?.off('keydown-ESC', this.handleArchiveEscape);
     this.destroyArchivePanel();
-  };
-
-  private handleBridgeMessage = (event: MessageEvent) => {
-    const message = event.data as ServerBridgeMessage | undefined;
-    if (!message || typeof message.type !== 'string') {
-      return;
-    }
-
-    this.applyServerMessage(message);
   };
 
   private applyServerMessage(message: ServerBridgeMessage) {
@@ -373,14 +428,15 @@ export class Game extends Scene {
         this.handleDeployRejected(message);
         break;
       case BridgeMessageType.SyncError:
-        this.statusText.setText(message.data.message);
+        this.statusText.setText(`${message.data.message} ${formatRelativeTime(Date.now() - this.statusTimestamp)}`);
+        this.statusTimestamp = Date.now();
         break;
       default:
         break;
     }
   }
 
-  private handlePointerDown = async (pointer: Phaser.Input.Pointer) => {
+  private handlePointerDown = (pointer: Phaser.Input.Pointer) => {
     if (this.isArchiveOpen) {
       if (!this.archivePanel || !this.archivePanelBg) return;
       const panelX = this.scale.width / 2;
@@ -401,29 +457,13 @@ export class Game extends Scene {
     const logicalX = (pointer.worldX / this.scale.width) * LOGICAL_FIELD_WIDTH;
     const logicalY = (pointer.worldY / this.scale.height) * LOGICAL_FIELD_HEIGHT;
 
-    const result = await deployNodeRequest({
+    this.deployQueue.push({
       type: this.selectedTool,
       x: logicalX,
       y: logicalY,
     });
-
-    if (!result.ok) {
-      this.applyServerMessage({
-        data: {
-          message: result.error.message,
-          reason: deriveDeployRejectionReason(result.error.message),
-          requested: {
-            type: this.selectedTool,
-            x: pointer.worldX,
-            y: pointer.worldY,
-          },
-        },
-        type: BridgeMessageType.NodeDeployRejected,
-      });
-      return;
-    }
-
-    this.handleDeploySuccess(result.data);
+    this.updatePendingDeployIndicator();
+    void this.processDeployQueue();
   };
 
   private handleDeploySuccess(result: NodeDeployResponse) {
@@ -456,6 +496,7 @@ export class Game extends Scene {
     }
 
     this.pruneExpiredNodes();
+    this.processThroughputRetries();
     const collected = this.simulation.step(delta, this.snapshot?.nodes ?? []);
     if (collected > 0) {
       this.queueThroughput(collected);
@@ -483,27 +524,31 @@ export class Game extends Scene {
 
     const result = await submitThroughputRequest(scoreBatch);
     if (!result.ok) {
-      this.applyServerMessage({
-        data: {
-          message: result.error.message,
-        },
-        type: BridgeMessageType.SyncError,
+      this.throughputRetryQueue.push({
+        attempts: 1,
+        count: scoreBatch,
+        nextRetryAt: Date.now() + 1000,
       });
+      this.updateSyncSpinner();
       return;
     }
 
+    this.applyThroughputSuccess(result.data);
+  }
+
+  private applyThroughputSuccess(data: ThroughputResponse) {
     this.applyServerMessage({
       data: {
-        delta: result.data.scoreDelta,
+        delta: data.scoreDelta,
         reason: ScoreUpdateReason.Batch,
-        score: result.data.snapshot.globalScore,
+        score: data.snapshot.globalScore,
       },
       type: BridgeMessageType.GlobalScoreUpdated,
     });
 
     this.applySnapshot({
       type: BridgeMessageType.InitialSnapshot,
-      data: result.data.snapshot,
+      data: data.snapshot,
     });
   }
 
@@ -515,6 +560,8 @@ export class Game extends Scene {
     try {
       const response = await requestInitialSnapshot();
       if (!response.ok) {
+        this.consecutiveNetworkFailures++;
+        this.checkSyncStalledState();
         this.applyServerMessage({
           data: {
             message: response.error.message,
@@ -524,12 +571,15 @@ export class Game extends Scene {
         return;
       }
 
+      this.consecutiveNetworkFailures = 0;
       this.applySnapshot({
         type: BridgeMessageType.InitialSnapshot,
         data: response.data.snapshot,
       });
     } catch (error) {
       console.error('Failed to fetch initial snapshot:', error);
+      this.consecutiveNetworkFailures++;
+      this.checkSyncStalledState();
       this.statusText.setText(UI_TEXT.snapshotFailed);
     }
   }
@@ -1130,6 +1180,191 @@ export class Game extends Scene {
       this.archiveEntryContainer!.add(seedText);
     });
   }
+
+  private async pollServerState() {
+    if (!this.isOnline) {
+      return;
+    }
+
+    try {
+      const response = await requestInitialSnapshot();
+      if (!response.ok) {
+        this.consecutiveNetworkFailures++;
+        this.checkSyncStalledState();
+        return;
+      }
+
+      this.consecutiveNetworkFailures = 0;
+      if (this.connectivityIndicator.visible) {
+        this.connectivityIndicator.setVisible(false);
+        this.statusText.setText(UI_TEXT.initialSnapshot(this.snapshot?.username ?? '', this.snapshot?.subredditName ?? null));
+      }
+
+      const incoming = response.data.snapshot;
+      if (this.snapshot) {
+        const sameNodes =
+          this.snapshot.nodes.length === incoming.nodes.length &&
+          this.snapshot.nodes.every((n, i) => n.id === incoming.nodes[i]!.id && n.expiresAt === incoming.nodes[i]!.expiresAt) &&
+          this.snapshot.globalScore === incoming.globalScore;
+
+        if (sameNodes && this.snapshot.fieldLayout?.dayKey === incoming.fieldLayout?.dayKey) {
+          this.snapshot.dailyResetAtUtc = incoming.dailyResetAtUtc;
+          this.snapshot.lastArchivedScore = incoming.lastArchivedScore;
+          return;
+        }
+      }
+
+      this.applySnapshot({
+        type: BridgeMessageType.InitialSnapshot,
+        data: incoming,
+      });
+    } catch (_error) {
+      this.consecutiveNetworkFailures++;
+      this.checkSyncStalledState();
+    }
+  }
+
+  private checkSyncStalledState() {
+    if (this.consecutiveNetworkFailures >= CONNECTIVITY_FAILURE_THRESHOLD && this.isOnline) {
+      this.connectivityIndicator.setText(UI_TEXT.syncStalled);
+      this.connectivityIndicator.setVisible(true);
+      this.pollTimer!.paused = true;
+    }
+  }
+
+  private onConnectivityLost() {
+    this.connectivityIndicator.setText(UI_TEXT.offline);
+    this.connectivityIndicator.setVisible(true);
+    if (this.pollTimer) {
+      this.pollTimer.paused = true;
+    }
+    this.deployInFlight = false;
+  }
+
+  private onConnectivityRestored() {
+    this.connectivityIndicator.setText(UI_TEXT.reconnecting);
+    this.connectivityIndicator.setVisible(true);
+    this.consecutiveNetworkFailures = 0;
+    if (this.pollTimer) {
+      this.pollTimer.paused = false;
+    }
+    void this.pollServerState();
+  }
+
+  private processThroughputRetries() {
+    if (this.throughputRetryQueue.length === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    let readyEntry: { count: number; attempts: number } | null = null;
+    const remaining: typeof this.throughputRetryQueue = [];
+
+    for (const entry of this.throughputRetryQueue) {
+      if (now < entry.nextRetryAt) {
+        remaining.push(entry);
+      } else if (!readyEntry) {
+        readyEntry = { count: entry.count, attempts: entry.attempts };
+      } else {
+        remaining.push(entry);
+      }
+    }
+
+    this.throughputRetryQueue = remaining;
+    if (readyEntry) {
+      void this.processSingleRetry(readyEntry);
+    }
+    this.updateSyncSpinner();
+  }
+
+  private async processSingleRetry(entry: { count: number; attempts: number }) {
+    const result = await submitThroughputRequest(entry.count);
+    if (result.ok) {
+      this.applyThroughputSuccess(result.data);
+      this.updateSyncSpinner();
+      return;
+    }
+
+    const nextAttempts = entry.attempts + 1;
+    if (nextAttempts < MAX_BACKOFF_ATTEMPTS) {
+      this.throughputRetryQueue.push({
+        attempts: nextAttempts,
+        count: entry.count,
+        nextRetryAt: Date.now() + 1000 * Math.pow(2, nextAttempts),
+      });
+    } else {
+      this.localPendingScore += entry.count;
+      this.statusText.setText(`Score returned to pending after ${MAX_BACKOFF_ATTEMPTS} retries`);
+    }
+    this.updateSyncSpinner();
+  }
+
+  private updateSyncSpinner() {
+    if (this.throughputRetryQueue.length > 0) {
+      this.syncSpinner.setText(UI_TEXT.retrying);
+      this.syncSpinner.setPosition(this.scale.width - UI_LAYOUT.layout.rightMetricsWidth + 180, UI_LAYOUT.layout.scoreY + 2);
+      this.syncSpinner.setVisible(true);
+    } else {
+      this.syncSpinner.setVisible(false);
+    }
+  }
+
+  private async processDeployQueue() {
+    if (this.deployInFlight || !this.isOnline) {
+      return;
+    }
+
+    while (this.deployQueue.length > 0) {
+      this.deployInFlight = true;
+      const item = this.deployQueue.shift()!;
+      this.currentDeployItem = item;
+      this.updatePendingDeployIndicator();
+
+      const result = await deployNodeRequest({
+        type: item.type,
+        x: item.x,
+        y: item.y,
+      });
+
+      if (!result.ok) {
+        this.applyServerMessage({
+          data: {
+            message: result.error.message,
+            reason: deriveDeployRejectionReason(result.error.message),
+            requested: {
+              type: item.type,
+              x: item.x,
+              y: item.y,
+            },
+          },
+          type: BridgeMessageType.NodeDeployRejected,
+        });
+      } else {
+        this.handleDeploySuccess(result.data);
+      }
+    }
+
+    this.deployInFlight = false;
+    this.currentDeployItem = null;
+    this.updatePendingDeployIndicator();
+  }
+
+  private updatePendingDeployIndicator() {
+    if (this.deployQueue.length === 0 && !this.deployInFlight) {
+      this.pendingDeployIndicator.setVisible(false);
+      return;
+    }
+
+    const count = this.deployQueue.length + (this.deployInFlight ? 1 : 0);
+    const tool = this.currentDeployItem?.type ?? this.selectedTool;
+    const ui = this.toolUi[tool];
+    this.pendingDeployIndicator.setText(`${UI_TEXT.pending} ${count}`);
+    this.pendingDeployIndicator.setPosition(
+      ui.panel.x + 60,
+      ui.panel.y - UI_LAYOUT.dock.cardHeight / 2 - 14
+    );
+    this.pendingDeployIndicator.setVisible(true);
+  }
 }
 
 const deriveDeployRejectionReason = (message: string) => {
@@ -1162,4 +1397,12 @@ const formatCountdown = (targetUtcMs: number) => {
 const formatDayKey = (dayKey: string) => {
   const date = new Date(dayKey);
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+const formatRelativeTime = (elapsedMs: number) => {
+  if (elapsedMs < 2000) return '(just now)';
+  const seconds = Math.floor(elapsedMs / 1000);
+  if (seconds < 60) return `(${seconds}s ago)`;
+  const minutes = Math.floor(seconds / 60);
+  return `(${minutes}m ago)`;
 };
