@@ -5,6 +5,16 @@ import { scaleFieldX, scaleFieldY } from '../shared/field-layout';
 
 const CAPTURE_RADIUS = 160;
 
+// A node projected into screen space. Node coordinates are stored in logical
+// field units (0..LOGICAL_FIELD_*) while particles live in screen pixels, so
+// we precompute the screen position once per frame instead of recomputing it
+// for every particle in the inner loop.
+type ScreenNode = {
+  type: NodeType;
+  x: number;
+  y: number;
+};
+
 const NODE_FORCE_SCALE: Record<NodeType, number> = {
   [NodeType.Attractor]: 0.95,
   [NodeType.Repeller]: 1.35,
@@ -116,11 +126,22 @@ export class ParticleField {
 
     let collected = 0;
 
+    // Precompute each active node's screen position once for the whole frame.
+    // Node coordinates are stored in logical field units (0..LOGICAL_FIELD_*)
+    // while particles live in screen pixels; converting here (instead of
+    // inside the per-particle loop) avoids recomputing the same invariant
+    // value for every particle × every node.
+    const screenNodes: ScreenNode[] = activeNodes.map((node) => ({
+      type: node.type,
+      x: scaleFieldX(node.x, this.width),
+      y: scaleFieldY(node.y, this.height),
+    }));
+
     this.emitter.forEachAlive((particle): void => {
       let ax = 0;
       let ay = BASE_GRAVITY;
 
-      for (const node of activeNodes) {
+      for (const node of screenNodes) {
         const dx = node.x - particle.x;
         const dy = node.y - particle.y;
         const distSq = dx * dx + dy * dy;
@@ -180,13 +201,20 @@ export class ParticleField {
             const distBottom = Math.abs(particle.y - (screenY + screenH));
             const minDist = Math.min(distLeft, distRight, distTop, distBottom);
 
-            if (minDist === distLeft || minDist === distRight) {
-              particle.velocityX = -particle.velocityX;
+            // Push particle out of obstacle instead of just bouncing
+            if (minDist === distLeft) {
+              particle.x = screenX - 1;
+              particle.velocityX = -Math.abs(particle.velocityX);
+            } else if (minDist === distRight) {
+              particle.x = screenX + screenW + 1;
+              particle.velocityX = Math.abs(particle.velocityX);
+            } else if (minDist === distTop) {
+              particle.y = screenY - 1;
+              particle.velocityY = -Math.abs(particle.velocityY);
             } else {
-              particle.velocityY = -particle.velocityY;
+              particle.y = screenY + screenH + 1;
+              particle.velocityY = Math.abs(particle.velocityY);
             }
-            particle.x += particle.velocityX * dt;
-            particle.y += particle.velocityY * dt;
           }
         }
 
@@ -382,24 +410,30 @@ export class ParticleField {
     this.nodeGraphics.clear();
 
     for (const node of nodes) {
+      // Node coordinates are stored in logical field space (0..LOGICAL_FIELD_*).
+      // The graphics object renders in screen space, so convert before drawing
+      // to keep node visuals aligned with both the click position and the
+      // particle simulation.
+      const screenX = scaleFieldX(node.x, this.width);
+      const screenY = scaleFieldY(node.y, this.height);
       const accent = NODE_ACCENTS[node.type];
       if (node.type === NodeType.Attractor) {
         this.nodeGraphics.lineStyle(3, accent, 0.9);
-        this.nodeGraphics.strokeCircle(node.x, node.y, 18);
-        this.nodeGraphics.strokeCircle(node.x, node.y, 28);
-        this.nodeGraphics.strokeCircle(node.x, node.y, 38);
+        this.nodeGraphics.strokeCircle(screenX, screenY, 18);
+        this.nodeGraphics.strokeCircle(screenX, screenY, 28);
+        this.nodeGraphics.strokeCircle(screenX, screenY, 38);
       } else if (node.type === NodeType.Repeller) {
         this.nodeGraphics.lineStyle(3, accent, 0.95);
         this.nodeGraphics.fillStyle(accent, 0.18);
-        this.nodeGraphics.fillTriangle(node.x - 22, node.y + 16, node.x, node.y - 20, node.x + 22, node.y + 16);
-        this.nodeGraphics.strokeTriangle(node.x - 22, node.y + 16, node.x, node.y - 20, node.x + 22, node.y + 16);
+        this.nodeGraphics.fillTriangle(screenX - 22, screenY + 16, screenX, screenY - 20, screenX + 22, screenY + 16);
+        this.nodeGraphics.strokeTriangle(screenX - 22, screenY + 16, screenX, screenY - 20, screenX + 22, screenY + 16);
       } else {
         this.nodeGraphics.lineStyle(3, accent, 0.95);
         this.nodeGraphics.beginPath();
-        this.nodeGraphics.arc(node.x, node.y, 24, Phaser.Math.DegToRad(30), Phaser.Math.DegToRad(330), false);
+        this.nodeGraphics.arc(screenX, screenY, 24, Phaser.Math.DegToRad(30), Phaser.Math.DegToRad(330), false);
         this.nodeGraphics.strokePath();
         this.nodeGraphics.lineStyle(1, accent, 0.45);
-        this.nodeGraphics.strokeCircle(node.x, node.y, 12);
+        this.nodeGraphics.strokeCircle(screenX, screenY, 12);
       }
     }
   }

@@ -59,6 +59,7 @@ export enum NodeDeployRejectionReason {
 export enum BridgeMessageType {
   NodeDeploy = 'NODE_DEPLOY',
   SubmitThroughput = 'SUBMIT_THROUGHPUT',
+  ToolSelect = 'TOOL_SELECT',
   InitialSnapshot = 'INITIAL_SNAPSHOT',
   NodeAdded = 'NODE_ADDED',
   NodeRemoved = 'NODE_REMOVED',
@@ -107,6 +108,10 @@ export type GameState = {
   dailyResetAtUtc: number;
   globalScore: number;
   nodes: GameNode[];
+  // Tool selection is a per-user preference, not a shared post-level value.
+  // Storing it as a map keyed by username keeps one viewer's choice from
+  // overwriting another's for the same cooperative post.
+  selectedTools: Record<string, NodeType>;
   fieldLayout?: FieldLayout | undefined;
 };
 
@@ -123,6 +128,13 @@ export type SubmitThroughputMessage = {
   type: BridgeMessageType.SubmitThroughput;
   data: {
     count: number;
+  };
+};
+
+export type ToolSelectMessage = {
+  type: BridgeMessageType.ToolSelect;
+  data: {
+    tool: NodeType;
   };
 };
 
@@ -198,6 +210,12 @@ export type ThroughputResponse = {
   contractVersion: typeof CONTRACT_VERSION;
   snapshot: GameSnapshot;
   scoreDelta: number;
+};
+
+export type ToolSelectResponse = {
+  type: 'tool_selected';
+  contractVersion: typeof CONTRACT_VERSION;
+  snapshot: GameSnapshot;
 };
 
 export type ArchiveEntry = {

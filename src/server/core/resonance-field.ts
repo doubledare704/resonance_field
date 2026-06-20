@@ -49,6 +49,24 @@ const isFiniteNumber = (value: unknown): value is number => {
   return typeof value === 'number' && Number.isFinite(value);
 };
 
+// Parse the per-user tool-selection map from persisted state. Tolerates
+// missing/invalid entries and the legacy single `selectedTool` string by
+// discarding anything that is not a valid NodeType. This keeps one user's
+// tool choice isolated from other viewers of the same cooperative post.
+const parseSelectedTools = (raw: unknown): Record<string, NodeType> => {
+  if (raw && typeof raw === 'object') {
+    const entries = Object.entries(raw as Record<string, unknown>);
+    const result: Record<string, NodeType> = {};
+    for (const [username, value] of entries) {
+      if (typeof value === 'string' && isNodeType(value)) {
+        result[username] = value;
+      }
+    }
+    return result;
+  }
+  return {};
+};
+
 const getPostId = (): string | null => {
   return context.postId ?? null;
 };
@@ -77,6 +95,7 @@ export const getEmptyState = (seed: SnapshotSeed): GameState => {
     dailyResetAtUtc: getNextDailyResetAt(now),
     globalScore: 0,
     nodes: [],
+    selectedTools: {},
     fieldLayout,
   };
 };
@@ -96,7 +115,7 @@ export const toSnapshot = (state: GameState, username: string, archivedScore?: n
     userActiveNodeIds: userNodes.map((node) => node.id),
     userActiveNodeCount: userNodes.length,
     userMaxActiveNodes: MAX_ACTIVE_NODES,
-    selectedTool: NodeType.Attractor,
+    selectedTool: state.selectedTools[username] ?? NodeType.Attractor,
     fieldLayout: state.fieldLayout,
     lastArchivedScore: archivedScore ?? undefined,
   };
@@ -138,6 +157,7 @@ export const parseState = (value: string | null | undefined, seed: SnapshotSeed)
           ? parsed.dailyResetAtUtc
           : getNextDailyResetAt(now),
         globalScore: isFiniteNumber(parsed.globalScore) ? parsed.globalScore : 0,
+        selectedTools: parseSelectedTools(parsed.selectedTools),
         nodes: parsed.nodes.filter(
           (node): node is GameNode =>
             !!node &&
@@ -356,6 +376,34 @@ export const submitThroughput = async (
     scoreDelta: count,
     type: 'throughput_accepted',
   };
+};
+
+export const selectTool = async (
+  tool: NodeType
+): Promise<
+  { snapshot: GameSnapshot } | { error: 'invalid_tool'; message: string } | null
+> => {
+  const seed = await getRequestSeed();
+  if (!seed) {
+    return null;
+  }
+
+  if (!isNodeType(tool)) {
+    return {
+      error: 'invalid_tool',
+      message: `Invalid tool type: ${tool}`,
+    };
+  }
+
+  // Persist the per-user tool choice. buildSnapshot saves state BEFORE the
+  // modifier runs, so we apply the change and save explicitly here (mirroring
+  // deployNode) to guarantee the selection survives the next poll.
+  const { state, archivedScore } = await refreshStateForNow(seed);
+  state.selectedTools[seed.username] = tool;
+  await saveState(state);
+  const snapshot = toSnapshot(state, seed.username, archivedScore);
+
+  return { snapshot };
 };
 
 export const resetDailyState = async (): Promise<ResetResponse | null> => {

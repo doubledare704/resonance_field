@@ -81,6 +81,7 @@ const makeState = (overrides: Partial<GameState> = {}): GameState => {
     dailyResetAtUtc: now + 86_400_000,
     globalScore: 0,
     nodes: [],
+    selectedTools: {},
     ...overrides,
   };
 };
@@ -296,8 +297,27 @@ describe('toSnapshot', () => {
     expect(snapshot.lastArchivedScore).toBeUndefined();
   });
 
-  it('always sets selectedTool to Attractor', () => {
-    const snapshot = toSnapshot(state, 'user-a');
+  it('projects the requesting user tool from the per-user map', () => {
+    const stateWithTools = makeState({ selectedTools: { 'user-a': NodeType.Vortex } });
+    const snapshot = toSnapshot(stateWithTools, 'user-a');
+    expect(snapshot.selectedTool).toBe(NodeType.Vortex);
+  });
+
+  it('keeps each user tool isolated per user', () => {
+    const stateWithTools = makeState({
+      selectedTools: { 'user-a': NodeType.Vortex, 'user-b': NodeType.Repeller },
+    });
+    expect(toSnapshot(stateWithTools, 'user-a').selectedTool).toBe(NodeType.Vortex);
+    expect(toSnapshot(stateWithTools, 'user-b').selectedTool).toBe(NodeType.Repeller);
+  });
+
+  it('defaults selectedTool to Attractor when the user has no entry', () => {
+    const stateForOtherUser = makeState({ selectedTools: { 'user-b': NodeType.Vortex } });
+    expect(toSnapshot(stateForOtherUser, 'user-a').selectedTool).toBe(NodeType.Attractor);
+  });
+
+  it('defaults selectedTool to Attractor when the map is empty', () => {
+    const snapshot = toSnapshot(makeState(), 'user-a');
     expect(snapshot.selectedTool).toBe(NodeType.Attractor);
   });
 });

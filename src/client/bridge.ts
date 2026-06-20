@@ -7,6 +7,8 @@ import type {
   ResetResponse,
   SubmitThroughputMessage,
   ThroughputResponse,
+  ToolSelectMessage,
+  ToolSelectResponse,
 } from '../shared/api';
 
 type ApiSuccess<T> = {
@@ -78,5 +80,14 @@ export const resetDailyStateRequest = async (): Promise<ApiResult<ResetResponse>
 
 export const requestArchiveHistory = async (): Promise<ApiResult<HistoryResponse>> => {
   return requestJson<HistoryResponse>('/api/history');
+};
+
+export const selectToolRequest = async (
+  tool: ToolSelectMessage['data']['tool']
+): Promise<ApiResult<ToolSelectResponse>> => {
+  return requestJson<ToolSelectResponse>('/api/tool-select', {
+    body: JSON.stringify({ tool }),
+    method: 'POST',
+  });
 };
 

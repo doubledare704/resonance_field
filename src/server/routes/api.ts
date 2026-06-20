@@ -5,6 +5,7 @@ import {
   deployNode,
   getArchiveHistory,
   resetDailyState,
+  selectTool,
   submitThroughput,
 } from '../core/resonance-field';
 import type {
@@ -16,6 +17,8 @@ import type {
   ResetResponse,
   SubmitThroughputMessage,
   ThroughputResponse,
+  ToolSelectMessage,
+  ToolSelectResponse,
 } from '../../shared/api';
 
 export const api = new Hono();
@@ -139,6 +142,54 @@ api.post('/throughput', async (c) => {
       {
         contractVersion: 'resonance-field/v1',
         message: 'Throughput submission failed',
+        type: 'error',
+      },
+      400
+    );
+  }
+});
+
+api.post('/tool-select', async (c) => {
+  try {
+    const input = await c.req.json<ToolSelectMessage['data']>();
+    const result = await selectTool(input.tool);
+
+    if (!result) {
+      return c.json<ErrorResponse>(
+        {
+          contractVersion: 'resonance-field/v1',
+          message: 'postId is required but missing from context',
+          type: 'error',
+        },
+        400
+      );
+    }
+
+    if ('error' in result) {
+      return c.json<ErrorResponse>(
+        {
+          contractVersion: 'resonance-field/v1',
+          message: result.message,
+          type: 'error',
+        },
+        400
+      );
+    }
+
+    return c.json<ToolSelectResponse>(
+      {
+        contractVersion: result.snapshot.contractVersion,
+        snapshot: result.snapshot,
+        type: 'tool_selected',
+      },
+      200
+    );
+  } catch (error) {
+    console.error('API tool select error:', error);
+    return c.json<ErrorResponse>(
+      {
+        contractVersion: 'resonance-field/v1',
+        message: 'Tool selection failed',
         type: 'error',
       },
       400

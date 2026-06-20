@@ -4,6 +4,7 @@ import {
   deployNodeRequest,
   requestArchiveHistory,
   requestInitialSnapshot,
+  selectToolRequest,
   submitThroughputRequest,
 } from '../bridge';
 import { ParticleField } from '../simulation';
@@ -418,6 +419,16 @@ export class Game extends Scene {
       }
     }
 
+    // Selecting a tool from the bottom dock or the archive button should only
+    // change the active tool (handled by those objects' own pointerdown
+    // listeners) and must NOT place a node in the playfield. Phaser fires the
+    // scene-level pointerdown for every press including presses on interactive
+    // game objects, so we explicitly skip placement when the press landed on a
+    // dock card hit-area or the archive button.
+    if (this.pointerHitInteractiveUi(pointer)) {
+      return;
+    }
+
     if (!this.snapshot) {
       return;
     }
@@ -433,6 +444,26 @@ export class Game extends Scene {
     this.updatePendingDeployIndicator();
     void this.processDeployQueue();
   };
+
+  private pointerHitInteractiveUi(pointer: Phaser.Input.Pointer): boolean {
+    const hitObjects = this.input.hitTestPointer(pointer);
+    if (hitObjects.length === 0) {
+      return false;
+    }
+
+    const toolHitAreas = new Set<unknown>(
+      Object.values(this.toolUi).map((ui) => ui.selectHitArea)
+    );
+    for (const obj of hitObjects) {
+      if (toolHitAreas.has(obj)) {
+        return true;
+      }
+      if (obj === this.archiveButton) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   private handleDeploySuccess(result: NodeDeployResponse) {
     if (result.removedNodeId) {
@@ -562,9 +593,18 @@ export class Game extends Scene {
     const newLayout = message.data.fieldLayout;
     const dayChanged = !prevLayout || (newLayout && prevLayout.dayKey !== newLayout.dayKey);
     const archivedScore = message.data.lastArchivedScore;
+    
+    // Preserve local tool selection to avoid flickering
+    const localSelectedTool = this.selectedTool;
 
     this.snapshot = { ...message.data, nodes: [...message.data.nodes] };
-    this.selectedTool = this.snapshot.selectedTool;
+    // Keep local tool selection unless it's the default (Attractor) and server has something different
+    if (localSelectedTool !== NodeType.Attractor || this.snapshot.selectedTool === NodeType.Attractor) {
+      this.selectedTool = localSelectedTool;
+      this.snapshot.selectedTool = localSelectedTool;
+    } else {
+      this.selectedTool = this.snapshot.selectedTool;
+    }
 
     if (newLayout && dayChanged) {
       if (prevLayout) {
@@ -688,6 +728,34 @@ export class Game extends Scene {
     this.rejectionResetTimer = null;
     this.statusText.setText(UI_TEXT.deploySelected(tool));
     this.updateToolDock();
+
+    // Sync with server. Capture the tool we're replacing so a failed sync can
+    // revert to it; reading the revert target from the snapshot later is
+    // unsafe because applySnapshot may have already overwritten it with the
+    // optimistic local value.
+    const previousTool = this.selectedTool === tool ? null : this.selectedTool;
+    void this.syncToolSelection(tool, previousTool);
+  }
+
+  private async syncToolSelection(tool: NodeType, previousTool: NodeType | null) {
+    if (!this.isOnline) {
+      return;
+    }
+
+    const result = await selectToolRequest(tool);
+    if (!result.ok) {
+      console.error('Failed to sync tool selection:', result.error.message);
+      // Revert to the tool that was active before this selection. Only revert
+      // if the user hasn't since picked a different tool (in which case the
+      // newer selection wins).
+      if (previousTool && this.selectedTool === tool) {
+        this.selectedTool = previousTool;
+        if (this.snapshot) {
+          this.snapshot.selectedTool = previousTool;
+        }
+        this.updateToolDock();
+      }
+    }
   }
 
   private updateToolDock() {
