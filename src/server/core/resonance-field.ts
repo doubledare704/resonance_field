@@ -66,7 +66,7 @@ const getNextDailyResetAt = (now: number) => {
   return getCurrentUtcDayStart(now) + 86_400_000;
 };
 
-const getEmptyState = (seed: SnapshotSeed): GameState => {
+export const getEmptyState = (seed: SnapshotSeed): GameState => {
   const now = seed.now ?? Date.now();
   const fieldLayout = seed.fieldLayout ?? generateDailyField(seed.postId, getCurrentUtcDayStart(now));
   return {
@@ -81,7 +81,7 @@ const getEmptyState = (seed: SnapshotSeed): GameState => {
   };
 };
 
-const toSnapshot = (state: GameState, username: string, archivedScore?: number | null): GameSnapshot => {
+export const toSnapshot = (state: GameState, username: string, archivedScore?: number | null): GameSnapshot => {
   const userNodes = state.nodes.filter((node) => node.ownerId === username);
 
   return {
@@ -102,7 +102,7 @@ const toSnapshot = (state: GameState, username: string, archivedScore?: number |
   };
 };
 
-const parseState = (value: string | null | undefined, seed: SnapshotSeed): GameState => {
+export const parseState = (value: string | null | undefined, seed: SnapshotSeed): GameState => {
   if (!value) {
     return getEmptyState(seed);
   }
@@ -166,7 +166,17 @@ const saveState = async (state: GameState) => {
 const archiveState = async (state: GameState, archivedAt: number) => {
   const historyKey = getHistoryKey(state.postId);
   const rawHistory = await redis.get(historyKey);
-  const history = rawHistory ? (JSON.parse(rawHistory) as ArchiveEntry[]) : [];
+  let history: ArchiveEntry[] = [];
+  if (rawHistory) {
+    try {
+      const parsed = JSON.parse(rawHistory);
+      if (Array.isArray(parsed)) {
+        history = parsed as ArchiveEntry[];
+      }
+    } catch {
+      history = [];
+    }
+  }
   history.push({
     archivedAt,
     score: state.globalScore,
@@ -177,7 +187,7 @@ const archiveState = async (state: GameState, archivedAt: number) => {
   await redis.set(historyKey, JSON.stringify(history));
 };
 
-const pruneExpiredNodes = (state: GameState, now: number) => {
+export const pruneExpiredNodes = (state: GameState, now: number) => {
   const aliveNodes = state.nodes.filter((node) => node.expiresAt > now);
   const removedNodeIds = state.nodes
     .filter((node) => node.expiresAt <= now)
@@ -190,7 +200,7 @@ const pruneExpiredNodes = (state: GameState, now: number) => {
   return removedNodeIds;
 };
 
-const refreshStateForNow = async (seed: SnapshotSeed): Promise<FreshStateResult> => {
+export const refreshStateForNow = async (seed: SnapshotSeed): Promise<FreshStateResult> => {
   const now = seed.now ?? Date.now();
   const rawState = await redis.get(getStateKey(seed.postId));
   const state = parseState(rawState, seed);
@@ -232,7 +242,7 @@ export const getRequestSeed = async (): Promise<SnapshotSeed | null> => {
   };
 };
 
-const buildSnapshot = async (
+export const buildSnapshot = async (
   seed: SnapshotSeed,
   modifier?: (state: GameState) => void | Promise<void>
 ): Promise<{ snapshot: GameSnapshot; archivedScore: number | null; state: GameState }> => {
@@ -372,7 +382,17 @@ export const getArchiveHistory = async (): Promise<HistoryResponse | null> => {
 
   const historyKey = getHistoryKey(postId);
   const rawHistory = await redis.get(historyKey);
-  const history = rawHistory ? (JSON.parse(rawHistory) as ArchiveEntry[]) : [];
+  let history: ArchiveEntry[] = [];
+  if (rawHistory) {
+    try {
+      const parsed = JSON.parse(rawHistory);
+      if (Array.isArray(parsed)) {
+        history = parsed as ArchiveEntry[];
+      }
+    } catch {
+      history = [];
+    }
+  }
 
   const sorted = history
     .filter((entry) => typeof entry.dayKey === 'string' && typeof entry.layoutSeed === 'number')
