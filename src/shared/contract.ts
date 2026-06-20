@@ -23,6 +23,23 @@ export enum NodeType {
   Vortex = 'VORTEX',
 }
 
+export enum DeviceTier {
+  Phone = 'phone',
+  Tablet = 'tablet',
+  Desktop = 'desktop',
+}
+
+const TIER_BREAKPOINTS = {
+  phoneMax: 480,
+  tabletMax: 1024,
+} as const;
+
+export const detectDeviceTier = (canvasWidth: number): DeviceTier => {
+  if (canvasWidth <= TIER_BREAKPOINTS.phoneMax) return DeviceTier.Phone;
+  if (canvasWidth <= TIER_BREAKPOINTS.tabletMax) return DeviceTier.Tablet;
+  return DeviceTier.Desktop;
+};
+
 export type GamePhase = 'booting' | 'idle' | 'active';
 
 export enum NodeRemovalReason {

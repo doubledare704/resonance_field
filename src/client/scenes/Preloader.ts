@@ -30,10 +30,12 @@ export class Preloader extends Scene {
   }
 
   create() {
-    //  When all the assets have loaded, it's often worth creating global objects here that the rest of the game can use.
-    //  For example, you can define global animations here, so we can use them in other scenes.
+    const gfx = this.make.graphics({ x: 0, y: 0 });
+    gfx.fillStyle(0xffffff, 1);
+    gfx.fillCircle(4, 4, 4);
+    gfx.generateTexture('particle_circle', 8, 8);
+    gfx.destroy();
 
-    //  Move to the MainMenu. You could also swap this for a Scene Transition, such as a camera fade.
     this.scene.start('MainMenu');
   }
 }

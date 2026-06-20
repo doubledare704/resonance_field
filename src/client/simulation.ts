@@ -3,26 +3,17 @@ import { NodeType } from '../shared/api';
 import type { FieldLayout, GameNode } from '../shared/api';
 import { scaleFieldX, scaleFieldY } from '../shared/field-layout';
 
-type Particle = {
-  age: number;
-  vx: number;
-  vy: number;
-  x: number;
-  y: number;
+const CAPTURE_RADIUS = 160;
+
+const NODE_FORCE_SCALE: Record<NodeType, number> = {
+  [NodeType.Attractor]: 0.95,
+  [NodeType.Repeller]: 1.35,
+  [NodeType.Vortex]: 1.75,
 };
 
-const SIMULATION = {
-  captureRadius: 160,
-  nodeForceScale: {
-    [NodeType.Attractor]: 0.95,
-    [NodeType.Repeller]: 1.35,
-    [NodeType.Vortex]: 1.75,
-  },
-  particleCount: 180,
-  particleLifetime: 1800,
-  maxSpeed: 12,
-  baseGravity: 0.09,
-} as const;
+const PARTICLE_LIFETIME_MS = 1_800_000;
+const MAX_SPEED = 12;
+const BASE_GRAVITY = 0.09;
 
 const NODE_ACCENTS: Record<NodeType, number> = {
   [NodeType.Attractor]: 0x00f0ff,
@@ -33,29 +24,54 @@ const NODE_ACCENTS: Record<NodeType, number> = {
 export class ParticleField {
   private readonly sinkGraphics: Phaser.GameObjects.Graphics;
   private readonly nodeGraphics: Phaser.GameObjects.Graphics;
-  private readonly particleGraphics: Phaser.GameObjects.Graphics;
   private readonly fieldGraphics: Phaser.GameObjects.Graphics;
-  private particles: Particle[] = [];
+  private readonly emitter: Phaser.GameObjects.Particles.ParticleEmitter;
   private sinkPulse = 0;
   private layout: FieldLayout | null = null;
+  private layoutVersion = -1;
+  private drawnLayoutVersion = -1;
 
   constructor(
     scene: Phaser.Scene,
     private width: number,
-    private height: number
+    private height: number,
+    particleCount: number,
+    particleTexture: string,
   ) {
     this.sinkGraphics = scene.add.graphics().setDepth(2);
     this.nodeGraphics = scene.add.graphics().setDepth(3);
-    this.particleGraphics = scene.add.graphics().setDepth(4);
     this.fieldGraphics = scene.add.graphics().setDepth(1);
-    this.resetParticles();
+
+    this.emitter = scene.add.particles(0, 0, particleTexture, {
+      frequency: -1,
+      quantity: particleCount,
+      maxParticles: particleCount,
+      lifespan: PARTICLE_LIFETIME_MS,
+      speed: 0,
+      alpha: {
+        onUpdate: (
+          _particle: Phaser.GameObjects.Particles.Particle,
+          _key: string,
+          t: number,
+          _value: number,
+        ) => {
+          const alpha = 0.25 + t * 0.6;
+          return Phaser.Math.Clamp(alpha, 0.25, 0.85);
+        },
+      },
+      tint: 0xe7ffff,
+      emitting: true,
+    });
+    this.emitter.setDepth(4);
+
+    this.seedParticles(particleCount);
   }
 
   destroy() {
     this.sinkGraphics.destroy();
     this.nodeGraphics.destroy();
-    this.particleGraphics.destroy();
     this.fieldGraphics.destroy();
+    this.emitter.destroy();
   }
 
   setSize(width: number, height: number) {
@@ -74,12 +90,15 @@ export class ParticleField {
   setAlpha(alpha: number) {
     this.sinkGraphics.setAlpha(alpha);
     this.nodeGraphics.setAlpha(alpha);
-    this.particleGraphics.setAlpha(alpha);
     this.fieldGraphics.setAlpha(alpha);
+    this.emitter.setAlpha(alpha);
   }
 
   setFieldLayout(layout: FieldLayout | null) {
     this.layout = layout;
+    if (layout) {
+      this.layoutVersion += 1;
+    }
   }
 
   step(delta: number, nodes: readonly GameNode[]) {
@@ -89,56 +108,58 @@ export class ParticleField {
 
     this.sinkPulse += delta * 0.004;
 
-    if (this.layout) {
+    if (this.layout && this.drawnLayoutVersion !== this.layoutVersion) {
       this.drawFieldLayout();
+      this.drawnLayoutVersion = this.layoutVersion;
     }
     this.drawNodes(activeNodes);
 
     let collected = 0;
-    this.particleGraphics.clear();
 
-    for (const particle of this.particles) {
-      particle.age += 1;
-
+    this.emitter.forEachAlive((particle): void => {
       let ax = 0;
-      let ay = SIMULATION.baseGravity;
+      let ay = BASE_GRAVITY;
 
       for (const node of activeNodes) {
         const dx = node.x - particle.x;
         const dy = node.y - particle.y;
         const distSq = dx * dx + dy * dy;
-        const captureRadiusSq = SIMULATION.captureRadius * SIMULATION.captureRadius;
+        const captureRadiusSq = CAPTURE_RADIUS * CAPTURE_RADIUS;
 
         if (distSq <= 36 || distSq >= captureRadiusSq) {
           continue;
         }
 
         const distance = Math.sqrt(distSq);
-        const forceFactor = ((SIMULATION.captureRadius - distance) / SIMULATION.captureRadius) * dt;
+        const forceFactor = ((CAPTURE_RADIUS - distance) / CAPTURE_RADIUS) * dt;
 
         if (node.type === NodeType.Attractor) {
-          ax += (dx / distance) * forceFactor * SIMULATION.nodeForceScale[NodeType.Attractor];
-          ay += (dy / distance) * forceFactor * SIMULATION.nodeForceScale[NodeType.Attractor];
+          ax += (dx / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Attractor];
+          ay += (dy / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Attractor];
         } else if (node.type === NodeType.Repeller) {
-          ax -= (dx / distance) * forceFactor * SIMULATION.nodeForceScale[NodeType.Repeller];
-          ay -= (dy / distance) * forceFactor * SIMULATION.nodeForceScale[NodeType.Repeller];
+          ax -= (dx / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Repeller];
+          ay -= (dy / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Repeller];
         } else {
-          ax += (-dy / distance) * forceFactor * SIMULATION.nodeForceScale[NodeType.Vortex];
-          ay += (dx / distance) * forceFactor * SIMULATION.nodeForceScale[NodeType.Vortex];
+          ax += (-dy / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Vortex];
+          ay += (dx / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Vortex];
         }
       }
 
-      particle.vx += ax * dt;
-      particle.vy += ay * dt;
+      particle.velocityX += ax * dt;
+      particle.velocityY += ay * dt;
 
-      const currentSpeed = Math.sqrt(particle.vx * particle.vx + particle.vy * particle.vy);
-      if (currentSpeed > SIMULATION.maxSpeed) {
-        particle.vx = (particle.vx / currentSpeed) * SIMULATION.maxSpeed;
-        particle.vy = (particle.vy / currentSpeed) * SIMULATION.maxSpeed;
+      const currentSpeed = Math.sqrt(
+        particle.velocityX * particle.velocityX + particle.velocityY * particle.velocityY
+      );
+      if (currentSpeed > MAX_SPEED) {
+        particle.velocityX = (particle.velocityX / currentSpeed) * MAX_SPEED;
+        particle.velocityY = (particle.velocityY / currentSpeed) * MAX_SPEED;
       }
 
-      particle.x += particle.vx * dt;
-      particle.y += particle.vy * dt;
+      particle.x += particle.velocityX * dt;
+      particle.y += particle.velocityY * dt;
+
+      const clampedSpeed = currentSpeed;
 
       if (this.layout) {
         for (const obstacle of this.layout.obstacles) {
@@ -160,12 +181,12 @@ export class ParticleField {
             const minDist = Math.min(distLeft, distRight, distTop, distBottom);
 
             if (minDist === distLeft || minDist === distRight) {
-              particle.vx = -particle.vx;
+              particle.velocityX = -particle.velocityX;
             } else {
-              particle.vy = -particle.vy;
+              particle.velocityY = -particle.velocityY;
             }
-            particle.x += particle.vx * dt;
-            particle.y += particle.vy * dt;
+            particle.x += particle.velocityX * dt;
+            particle.y += particle.velocityY * dt;
           }
         }
 
@@ -177,14 +198,14 @@ export class ParticleField {
           const dy = particle.y - screenY;
           if (dx * dx + dy * dy <= screenR * screenR) {
             this.respawnParticle(particle);
-            continue;
+            return;
           }
         }
 
         if (this.isCollected(particle)) {
           collected += 1;
           this.respawnParticle(particle, true);
-          continue;
+          return;
         }
 
         const bounds = this.layout.bounds;
@@ -200,56 +221,59 @@ export class ParticleField {
           particle.y > screenBoundsY + screenBoundsH
         ) {
           this.respawnParticle(particle);
-          continue;
+          return;
         }
       } else {
         if (this.isCollected(particle)) {
           collected += 1;
           this.respawnParticle(particle, true);
-          continue;
+          return;
         }
 
         if (
-          particle.age > SIMULATION.particleLifetime ||
           particle.x < -24 ||
           particle.x > this.width + 24 ||
           particle.y > this.height + 24
         ) {
           this.respawnParticle(particle);
-          continue;
+          return;
         }
 
         if (particle.y < -24) {
           particle.y = -24;
-          particle.vy = Math.abs(particle.vy);
+          particle.velocityY = Math.abs(particle.velocityY);
         }
 
         if (particle.x < 24) {
           particle.x = 24;
-          particle.vx = Math.abs(particle.vx);
+          particle.velocityX = Math.abs(particle.velocityX);
         } else if (particle.x > this.width - 24) {
           particle.x = this.width - 24;
-          particle.vx = -Math.abs(particle.vx);
+          particle.velocityX = -Math.abs(particle.velocityX);
         }
       }
 
-      const alpha = Phaser.Math.Clamp(0.25 + particle.age / 1400, 0.25, 0.85);
-      const intensity = Phaser.Math.Clamp(currentSpeed / 12, 0.2, 1);
-      this.particleGraphics.fillStyle(0xe7ffff, alpha);
-      this.particleGraphics.fillCircle(particle.x, particle.y, 1.5 + intensity);
-    }
+      const intensity = Phaser.Math.Clamp(clampedSpeed / MAX_SPEED, 0.2, 1);
+      const size = 0.6 + intensity * 1.2;
+      particle.scaleX = size;
+      particle.scaleY = size;
+    }, this);
 
     return collected;
   }
 
-  private resetParticles() {
-    this.particles = [];
-    for (let index = 0; index < SIMULATION.particleCount; index += 1) {
-      this.particles.push(this.createParticle(true));
+  private seedParticles(count: number) {
+    for (let index = 0; index < count; index += 1) {
+      const spawn = this.spawnCoords(index > 0);
+      const particle = this.emitter.emitParticleAt(spawn.x, spawn.y);
+      if (particle) {
+        particle.velocityX = Phaser.Math.FloatBetween(-0.45, 0.45);
+        particle.velocityY = Phaser.Math.FloatBetween(0.35, 0.9);
+      }
     }
   }
 
-  private createParticle(initial = false): Particle {
+  private spawnCoords(initial = false) {
     const spawnBandY = this.layout
       ? scaleFieldY(this.layout.spawnBand.y + this.layout.spawnBand.h * 0.5, this.height)
       : this.height * 0.15;
@@ -258,24 +282,28 @@ export class ParticleField {
       : Phaser.Math.Between(-60, 10);
 
     return {
-      age: 0,
-      vx: Phaser.Math.FloatBetween(-0.45, 0.45),
-      vy: Phaser.Math.FloatBetween(0.35, 0.9),
       x: Phaser.Math.Between(24, Math.max(25, this.width - 24)),
       y: startY,
     };
   }
 
-  private respawnParticle(particle: Particle, asBurst = false) {
-    const respawn = this.createParticle(!asBurst);
-    particle.x = respawn.x;
-    particle.y = respawn.y;
-    particle.vx = respawn.vx;
-    particle.vy = asBurst ? Phaser.Math.FloatBetween(0.7, 1.6) : respawn.vy;
-    particle.age = 0;
+  private respawnParticle(
+    particle: Phaser.GameObjects.Particles.Particle,
+    asBurst = false
+  ) {
+    const spawn = this.spawnCoords(!asBurst);
+    particle.x = spawn.x;
+    particle.y = spawn.y;
+    particle.velocityX = Phaser.Math.FloatBetween(-0.45, 0.45);
+    particle.velocityY = asBurst
+      ? Phaser.Math.FloatBetween(0.7, 1.6)
+      : Phaser.Math.FloatBetween(0.35, 0.9);
+    particle.lifeCurrent = particle.life;
+    particle.scaleX = 0.6;
+    particle.scaleY = 0.6;
   }
 
-  private isCollected(particle: Particle) {
+  private isCollected(particle: Phaser.GameObjects.Particles.Particle) {
     if (!this.layout) {
       const sinkX = this.width / 2;
       const sinkY = this.height * 0.81;
