@@ -1,15 +1,11 @@
 import * as Phaser from 'phaser';
 import { NodeType } from '../shared/api';
 import type { FieldLayout, GameNode } from '../shared/api';
-import { scaleFieldX, scaleFieldY } from '../shared/field-layout';
+import { logicalToCanonical } from '../shared/field-layout';
 
-const CAPTURE_RADIUS = 160;
+const CAPTURE_RADIUS = 384;
 
-// A node projected into screen space. Node coordinates are stored in logical
-// field units (0..LOGICAL_FIELD_*) while particles live in screen pixels, so
-// we precompute the screen position once per frame instead of recomputing it
-// for every particle in the inner loop.
-type ScreenNode = {
+type CanonicalNode = {
   type: NodeType;
   x: number;
   y: number;
@@ -22,13 +18,36 @@ const NODE_FORCE_SCALE: Record<NodeType, number> = {
 };
 
 const PARTICLE_LIFETIME_MS = 1_800_000;
-const MAX_SPEED = 12;
-const BASE_GRAVITY = 0.09;
+const MAX_SPEED = 28.8;
+const BASE_GRAVITY = 0.216;
+
+const VIRTUAL_WIDTH = 1920;
+const VIRTUAL_HEIGHT = 1080;
 
 const NODE_ACCENTS: Record<NodeType, number> = {
   [NodeType.Attractor]: 0x00f0ff,
   [NodeType.Repeller]: 0xff0055,
   [NodeType.Vortex]: 0xffaa00,
+};
+
+type CanonicalLayout = {
+  bounds: { x: number; y: number; w: number; h: number };
+  obstacles: Array<{ x: number; y: number; w: number; h: number }>;
+  hazards: Array<{ x: number; y: number; r: number }>;
+  sink: { x: number; y: number; r: number };
+  spawnBand: { x: number; y: number; w: number; h: number };
+};
+
+const logicalRectToCanonical = (r: { x: number; y: number; w: number; h: number }) => {
+  const tl = logicalToCanonical(r.x, r.y);
+  const br = logicalToCanonical(r.x + r.w, r.y + r.h);
+  return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
+};
+
+const logicalCircleToCanonical = (c: { x: number; y: number; r: number }) => {
+  const center = logicalToCanonical(c.x, c.y);
+  const edge = logicalToCanonical(c.x + c.r, c.y);
+  return { x: center.x, y: center.y, r: edge.x - center.x };
 };
 
 export class ParticleField {
@@ -38,13 +57,12 @@ export class ParticleField {
   private readonly emitter: Phaser.GameObjects.Particles.ParticleEmitter;
   private sinkPulse = 0;
   private layout: FieldLayout | null = null;
+  private canonicalLayout: CanonicalLayout | null = null;
   private layoutVersion = -1;
   private drawnLayoutVersion = -1;
 
   constructor(
     scene: Phaser.Scene,
-    private width: number,
-    private height: number,
     particleCount: number,
     particleTexture: string,
   ) {
@@ -84,11 +102,6 @@ export class ParticleField {
     this.emitter.destroy();
   }
 
-  setSize(width: number, height: number) {
-    this.width = width;
-    this.height = height;
-  }
-
   get alpha(): number {
     return this.sinkGraphics.alpha;
   }
@@ -108,6 +121,13 @@ export class ParticleField {
     this.layout = layout;
     if (layout) {
       this.layoutVersion += 1;
+      this.canonicalLayout = {
+        bounds: logicalRectToCanonical(layout.bounds),
+        obstacles: layout.obstacles.map(logicalRectToCanonical),
+        hazards: layout.hazards.map(logicalCircleToCanonical),
+        sink: logicalCircleToCanonical(layout.sink),
+        spawnBand: logicalRectToCanonical(layout.spawnBand),
+      };
     }
   }
 
@@ -126,22 +146,16 @@ export class ParticleField {
 
     let collected = 0;
 
-    // Precompute each active node's screen position once for the whole frame.
-    // Node coordinates are stored in logical field units (0..LOGICAL_FIELD_*)
-    // while particles live in screen pixels; converting here (instead of
-    // inside the per-particle loop) avoids recomputing the same invariant
-    // value for every particle × every node.
-    const screenNodes: ScreenNode[] = activeNodes.map((node) => ({
-      type: node.type,
-      x: scaleFieldX(node.x, this.width),
-      y: scaleFieldY(node.y, this.height),
-    }));
+    const canonicalNodes: CanonicalNode[] = activeNodes.map((node) => {
+      const c = logicalToCanonical(node.x, node.y);
+      return { type: node.type, x: c.x, y: c.y };
+    });
 
     this.emitter.forEachAlive((particle): void => {
       let ax = 0;
       let ay = BASE_GRAVITY;
 
-      for (const node of screenNodes) {
+      for (const node of canonicalNodes) {
         const dx = node.x - particle.x;
         const dy = node.y - particle.y;
         const distSq = dx * dx + dy * dy;
@@ -182,77 +196,66 @@ export class ParticleField {
 
       const clampedSpeed = currentSpeed;
 
-      if (this.layout) {
-        for (const obstacle of this.layout.obstacles) {
-          const screenX = scaleFieldX(obstacle.x, this.width);
-          const screenY = scaleFieldY(obstacle.y, this.height);
-          const screenW = scaleFieldX(obstacle.w, this.width) - scaleFieldX(0, this.width);
-          const screenH = scaleFieldY(obstacle.h, this.height) - scaleFieldY(0, this.height);
+      if (this.canonicalLayout) {
+        const layout = this.canonicalLayout;
 
+        for (const obstacle of layout.obstacles) {
           if (
-            particle.x >= screenX &&
-            particle.x <= screenX + screenW &&
-            particle.y >= screenY &&
-            particle.y <= screenY + screenH
+            particle.x >= obstacle.x &&
+            particle.x <= obstacle.x + obstacle.w &&
+            particle.y >= obstacle.y &&
+            particle.y <= obstacle.y + obstacle.h
           ) {
-            const distLeft = Math.abs(particle.x - screenX);
-            const distRight = Math.abs(particle.x - (screenX + screenW));
-            const distTop = Math.abs(particle.y - screenY);
-            const distBottom = Math.abs(particle.y - (screenY + screenH));
+            const distLeft = Math.abs(particle.x - obstacle.x);
+            const distRight = Math.abs(particle.x - (obstacle.x + obstacle.w));
+            const distTop = Math.abs(particle.y - obstacle.y);
+            const distBottom = Math.abs(particle.y - (obstacle.y + obstacle.h));
             const minDist = Math.min(distLeft, distRight, distTop, distBottom);
 
-            // Push particle out of obstacle instead of just bouncing
             if (minDist === distLeft) {
-              particle.x = screenX - 1;
+              particle.x = obstacle.x - 1;
               particle.velocityX = -Math.abs(particle.velocityX);
             } else if (minDist === distRight) {
-              particle.x = screenX + screenW + 1;
+              particle.x = obstacle.x + obstacle.w + 1;
               particle.velocityX = Math.abs(particle.velocityX);
             } else if (minDist === distTop) {
-              particle.y = screenY - 1;
+              particle.y = obstacle.y - 1;
               particle.velocityY = -Math.abs(particle.velocityY);
             } else {
-              particle.y = screenY + screenH + 1;
+              particle.y = obstacle.y + obstacle.h + 1;
               particle.velocityY = Math.abs(particle.velocityY);
             }
           }
         }
 
-        for (const hazard of this.layout.hazards) {
-          const screenX = scaleFieldX(hazard.x, this.width);
-          const screenY = scaleFieldY(hazard.y, this.height);
-          const screenR = scaleFieldX(hazard.r, this.width);
-          const dx = particle.x - screenX;
-          const dy = particle.y - screenY;
-          if (dx * dx + dy * dy <= screenR * screenR) {
+        for (const hazard of layout.hazards) {
+          const dx = particle.x - hazard.x;
+          const dy = particle.y - hazard.y;
+          if (dx * dx + dy * dy <= hazard.r * hazard.r) {
             this.respawnParticle(particle);
             return;
           }
         }
 
-        if (this.isCollected(particle)) {
+        if (this.isCollected(particle, layout)) {
           collected += 1;
           this.respawnParticle(particle, true);
           return;
         }
 
-        const bounds = this.layout.bounds;
-        const screenBoundsX = scaleFieldX(bounds.x, this.width);
-        const screenBoundsY = scaleFieldY(bounds.y, this.height);
-        const screenBoundsW = scaleFieldX(bounds.w, this.width) - scaleFieldX(0, this.width);
-        const screenBoundsH = scaleFieldY(bounds.h, this.height) - scaleFieldY(0, this.height);
+        const bounds = layout.bounds;
 
         if (
-          particle.x < screenBoundsX ||
-          particle.x > screenBoundsX + screenBoundsW ||
-          particle.y < screenBoundsY ||
-          particle.y > screenBoundsY + screenBoundsH
+          particle.x < bounds.x ||
+          particle.x > bounds.x + bounds.w ||
+          particle.y < bounds.y ||
+          particle.y > bounds.y + bounds.h
         ) {
           this.respawnParticle(particle);
           return;
         }
       } else {
-        if (this.isCollected(particle)) {
+        if (this.isCollectedFallback(particle)) {
           collected += 1;
           this.respawnParticle(particle, true);
           return;
@@ -260,8 +263,8 @@ export class ParticleField {
 
         if (
           particle.x < -24 ||
-          particle.x > this.width + 24 ||
-          particle.y > this.height + 24
+          particle.x > VIRTUAL_WIDTH + 24 ||
+          particle.y > VIRTUAL_HEIGHT + 24
         ) {
           this.respawnParticle(particle);
           return;
@@ -275,8 +278,8 @@ export class ParticleField {
         if (particle.x < 24) {
           particle.x = 24;
           particle.velocityX = Math.abs(particle.velocityX);
-        } else if (particle.x > this.width - 24) {
-          particle.x = this.width - 24;
+        } else if (particle.x > VIRTUAL_WIDTH - 24) {
+          particle.x = VIRTUAL_WIDTH - 24;
           particle.velocityX = -Math.abs(particle.velocityX);
         }
       }
@@ -302,15 +305,16 @@ export class ParticleField {
   }
 
   private spawnCoords(initial = false) {
-    const spawnBandY = this.layout
-      ? scaleFieldY(this.layout.spawnBand.y + this.layout.spawnBand.h * 0.5, this.height)
-      : this.height * 0.15;
+    const layout = this.canonicalLayout;
+    const spawnBandY = layout
+      ? layout.spawnBand.y + layout.spawnBand.h * 0.5
+      : VIRTUAL_HEIGHT * 0.15;
     const startY = initial
-      ? Phaser.Math.Between(-Math.round(spawnBandY), Math.round(this.height * 0.5))
+      ? Phaser.Math.Between(-Math.round(spawnBandY), Math.round(VIRTUAL_HEIGHT * 0.5))
       : Phaser.Math.Between(-60, 10);
 
     return {
-      x: Phaser.Math.Between(24, Math.max(25, this.width - 24)),
+      x: Phaser.Math.Between(24, Math.max(25, VIRTUAL_WIDTH - 24)),
       y: startY,
     };
   }
@@ -331,91 +335,72 @@ export class ParticleField {
     particle.scaleY = 0.6;
   }
 
-  private isCollected(particle: Phaser.GameObjects.Particles.Particle) {
-    if (!this.layout) {
-      const sinkX = this.width / 2;
-      const sinkY = this.height * 0.81;
-      const sinkR = Math.min(this.width, this.height) * 0.075;
-      if (particle.y < sinkY - sinkR * 0.4) {
-        return false;
-      }
-      const dx = particle.x - sinkX;
-      const dy = particle.y - sinkY;
-      return dx * dx + dy * dy <= sinkR * sinkR;
-    }
+  private isCollected(particle: Phaser.GameObjects.Particles.Particle, layout: CanonicalLayout) {
+    const sink = layout.sink;
 
-    const sink = this.layout.sink;
-    const screenX = scaleFieldX(sink.x, this.width);
-    const screenY = scaleFieldY(sink.y, this.height);
-    const screenR = scaleFieldX(sink.r, this.width);
-
-    if (particle.y < screenY - screenR * 0.4) {
+    if (particle.y < sink.y - sink.r * 0.4) {
       return false;
     }
 
-    const dx = particle.x - screenX;
-    const dy = particle.y - screenY;
-    return dx * dx + dy * dy <= screenR * screenR;
+    const dx = particle.x - sink.x;
+    const dy = particle.y - sink.y;
+    return dx * dx + dy * dy <= sink.r * sink.r;
+  }
+
+  private isCollectedFallback(particle: Phaser.GameObjects.Particles.Particle) {
+    const sinkX = VIRTUAL_WIDTH / 2;
+    const sinkY = VIRTUAL_HEIGHT * 0.81;
+    const sinkR = Math.min(VIRTUAL_WIDTH, VIRTUAL_HEIGHT) * 0.075;
+    if (particle.y < sinkY - sinkR * 0.4) {
+      return false;
+    }
+    const dx = particle.x - sinkX;
+    const dy = particle.y - sinkY;
+    return dx * dx + dy * dy <= sinkR * sinkR;
   }
 
   private drawFieldLayout() {
-    if (!this.layout) return;
+    if (!this.canonicalLayout) return;
 
     this.fieldGraphics.clear();
 
-    for (const obstacle of this.layout.obstacles) {
-      const x = scaleFieldX(obstacle.x, this.width);
-      const y = scaleFieldY(obstacle.y, this.height);
-      const w = scaleFieldX(obstacle.w, this.width) - scaleFieldX(0, this.width);
-      const h = scaleFieldY(obstacle.h, this.height) - scaleFieldY(0, this.height);
-
+    for (const obstacle of this.canonicalLayout.obstacles) {
       this.fieldGraphics.lineStyle(2, 0x00f0ff, 0.7);
       this.fieldGraphics.fillStyle(0x0d0e15, 0.9);
-      this.fieldGraphics.fillRect(x, y, w, h);
-      this.fieldGraphics.strokeRect(x, y, w, h);
+      this.fieldGraphics.fillRect(obstacle.x, obstacle.y, obstacle.w, obstacle.h);
+      this.fieldGraphics.strokeRect(obstacle.x, obstacle.y, obstacle.w, obstacle.h);
     }
 
-    for (const hazard of this.layout.hazards) {
-      const x = scaleFieldX(hazard.x, this.width);
-      const y = scaleFieldY(hazard.y, this.height);
-      const r = scaleFieldX(hazard.r, this.width);
-
+    for (const hazard of this.canonicalLayout.hazards) {
       const pulse = 0.5 + Math.sin(this.sinkPulse * 2) * 0.3;
       this.fieldGraphics.lineStyle(2, 0xff0055, 0.6 * pulse);
-      this.fieldGraphics.strokeCircle(x, y, r * (1 + pulse * 0.2));
+      this.fieldGraphics.strokeCircle(hazard.x, hazard.y, hazard.r * (1 + pulse * 0.2));
     }
 
-    this.drawSink(this.layout.sink);
+    this.drawSink(this.canonicalLayout.sink);
   }
 
   private drawSink(sink: { x: number; y: number; r: number }) {
     this.sinkGraphics.clear();
 
-    const screenX = scaleFieldX(sink.x, this.width);
-    const screenY = scaleFieldY(sink.y, this.height);
-    const screenR = scaleFieldX(sink.r, this.width);
-
     const pulse = 0.5 + Math.sin(this.sinkPulse) * 0.25;
     this.sinkGraphics.lineStyle(2, 0x00f0ff, 0.5);
-    this.sinkGraphics.strokeCircle(screenX, screenY, screenR * (1.2 + pulse * 0.15));
+    this.sinkGraphics.strokeCircle(sink.x, sink.y, sink.r * (1.2 + pulse * 0.15));
     this.sinkGraphics.lineStyle(1, 0xffaa00, 0.45);
-    this.sinkGraphics.strokeCircle(screenX, screenY, screenR * (0.82 + pulse * 0.1));
+    this.sinkGraphics.strokeCircle(sink.x, sink.y, sink.r * (0.82 + pulse * 0.1));
     this.sinkGraphics.fillStyle(0x081118, 0.85);
-    this.sinkGraphics.fillCircle(screenX, screenY, screenR * 0.72);
+    this.sinkGraphics.fillCircle(sink.x, sink.y, sink.r * 0.72);
     this.sinkGraphics.lineStyle(1, 0xffffff, 0.08);
-    this.sinkGraphics.strokeCircle(screenX, screenY, screenR * 0.55);
+    this.sinkGraphics.strokeCircle(sink.x, sink.y, sink.r * 0.55);
   }
 
   private drawNodes(nodes: readonly GameNode[]) {
     this.nodeGraphics.clear();
 
     for (const node of nodes) {
-      // Node coordinates are stored in logical field space (0..LOGICAL_FIELD_*).
-      // The graphics object renders in screen space, so convert before drawing
-      // to keep node visuals aligned with both the click position and the
-      // particle simulation.
-      const screenX = scaleFieldX(node.x, this.width);
-      const screenY = scaleFieldY(node.y, this.height);
+      const c = logicalToCanonical(node.x, node.y);
+      const screenX = c.x;
+      const screenY = c.y;
       const accent = NODE_ACCENTS[node.type];
       if (node.type === NodeType.Attractor) {
         this.nodeGraphics.lineStyle(3, accent, 0.9);

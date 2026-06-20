@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  scaleFieldX,
-  scaleFieldY,
+  logicalToCanonical,
+  canonicalToLogical,
   pointInRect,
   pointInCircle,
   circleIntersectsRect,
@@ -9,43 +9,51 @@ import {
   type FieldCircle,
 } from '../field-layout';
 
-describe('scaleFieldX', () => {
-  it('scales proportionally: midpoint', () => {
-    expect(scaleFieldX(400, 800)).toBe(400);
+describe('logicalToCanonical', () => {
+  it('converts logical center to canonical center', () => {
+    const result = logicalToCanonical(400, 300);
+    expect(result.x).toBe(960);
+    expect(result.y).toBe(540);
   });
 
-  it('scales zero to zero', () => {
-    expect(scaleFieldX(0, 800)).toBe(0);
+  it('converts logical origin to canonical origin', () => {
+    const result = logicalToCanonical(0, 0);
+    expect(result.x).toBe(0);
+    expect(result.y).toBe(0);
   });
 
-  it('scales full width to full width', () => {
-    expect(scaleFieldX(800, 800)).toBe(800);
-  });
-
-  it('scales to wider canvas', () => {
-    expect(scaleFieldX(200, 1600)).toBe(400);
-  });
-
-  it('scales to narrower canvas', () => {
-    expect(scaleFieldX(400, 400)).toBe(200);
+  it('converts logical max to canonical max', () => {
+    const result = logicalToCanonical(800, 600);
+    expect(result.x).toBe(1920);
+    expect(result.y).toBe(1080);
   });
 });
 
-describe('scaleFieldY', () => {
-  it('scales proportionally: midpoint', () => {
-    expect(scaleFieldY(300, 600)).toBe(300);
+describe('canonicalToLogical', () => {
+  it('converts canonical center to logical center', () => {
+    const result = canonicalToLogical(960, 540);
+    expect(result.x).toBe(400);
+    expect(result.y).toBe(300);
   });
 
-  it('scales zero to zero', () => {
-    expect(scaleFieldY(0, 600)).toBe(0);
+  it('converts canonical origin to logical origin', () => {
+    const result = canonicalToLogical(0, 0);
+    expect(result.x).toBe(0);
+    expect(result.y).toBe(0);
   });
 
-  it('scales full height to full height', () => {
-    expect(scaleFieldY(600, 600)).toBe(600);
+  it('converts canonical max to logical max', () => {
+    const result = canonicalToLogical(1920, 1080);
+    expect(result.x).toBe(800);
+    expect(result.y).toBe(600);
   });
 
-  it('scales to taller canvas', () => {
-    expect(scaleFieldY(150, 1200)).toBe(300);
+  it('roundtrips correctly', () => {
+    const original = { x: 350, y: 275 };
+    const canonical = logicalToCanonical(original.x, original.y);
+    const back = canonicalToLogical(canonical.x, canonical.y);
+    expect(back.x).toBeCloseTo(original.x, 5);
+    expect(back.y).toBeCloseTo(original.y, 5);
   });
 });
 

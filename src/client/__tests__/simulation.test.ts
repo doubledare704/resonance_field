@@ -199,8 +199,6 @@ function makeFieldLayout(overrides: Partial<FieldLayout> = {}): FieldLayout {
 }
 
 describe('ParticleField', () => {
-  const WIDTH = 800;
-  const HEIGHT = 600;
   const PARTICLE_COUNT = 30;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -210,7 +208,7 @@ describe('ParticleField', () => {
 
   describe('step() particle collection', () => {
     it('collects particles that reach the sink zone with an Attractor', () => {
-      const field = new ParticleField(newScene(), WIDTH, HEIGHT, PARTICLE_COUNT, 'particle_circle');
+      const field = new ParticleField(newScene(), PARTICLE_COUNT, 'particle_circle');
       const attractor = makeNode({ type: NodeType.Attractor, x: 400, y: 250 });
       let collected = 0;
       for (let i = 0; i < 600; i++) collected += field.step(16.667, [attractor]);
@@ -218,7 +216,7 @@ describe('ParticleField', () => {
     });
 
     it('collects particles with Repeller and Attractor both present', () => {
-      const field = new ParticleField(newScene(), WIDTH, HEIGHT, PARTICLE_COUNT, 'particle_circle');
+      const field = new ParticleField(newScene(), PARTICLE_COUNT, 'particle_circle');
       const repeller = makeNode({ type: NodeType.Repeller, x: 600, y: 400 });
       const attractor = makeNode({ id: 'node-2', type: NodeType.Attractor, x: 200, y: 300 });
       let collected = 0;
@@ -227,7 +225,7 @@ describe('ParticleField', () => {
     });
 
     it('collects particles with Vortex nodes', () => {
-      const field = new ParticleField(newScene(), WIDTH, HEIGHT, PARTICLE_COUNT, 'particle_circle');
+      const field = new ParticleField(newScene(), PARTICLE_COUNT, 'particle_circle');
       const vortex = makeNode({ type: NodeType.Vortex, x: 400, y: 200 });
       let collected = 0;
       for (let i = 0; i < 600; i++) collected += field.step(16.667, [vortex]);
@@ -235,7 +233,7 @@ describe('ParticleField', () => {
     });
 
     it('skips expired nodes during simulation', () => {
-      const field = new ParticleField(newScene(), WIDTH, HEIGHT, PARTICLE_COUNT, 'particle_circle');
+      const field = new ParticleField(newScene(), PARTICLE_COUNT, 'particle_circle');
       const expired = makeNode({ id: 'expired', expiresAt: 1 });
       const active = makeNode({ id: 'active', type: NodeType.Attractor, x: 400, y: 200, expiresAt: Date.now() + 60000 });
 
@@ -254,13 +252,13 @@ describe('ParticleField', () => {
     }
 
     it('setFieldLayout increments layoutVersion', () => {
-      const field = new ParticleField(newScene(), WIDTH, HEIGHT, PARTICLE_COUNT, 'particle_circle');
+      const field = new ParticleField(newScene(), PARTICLE_COUNT, 'particle_circle');
       field.setFieldLayout(makeFieldLayout());
       expect(getInternals(field).layoutVersion).toBe(0);
     });
 
     it('layout is drawn on first step() after setFieldLayout', () => {
-      const field = new ParticleField(newScene(), WIDTH, HEIGHT, PARTICLE_COUNT, 'particle_circle');
+      const field = new ParticleField(newScene(), PARTICLE_COUNT, 'particle_circle');
       const internals = getInternals(field);
       expect(internals.drawnLayoutVersion).toBe(-1);
 
@@ -270,7 +268,7 @@ describe('ParticleField', () => {
     });
 
     it('redraws when layoutVersion changes', () => {
-      const field = new ParticleField(newScene(), WIDTH, HEIGHT, PARTICLE_COUNT, 'particle_circle');
+      const field = new ParticleField(newScene(), PARTICLE_COUNT, 'particle_circle');
       const internals = getInternals(field);
 
       field.setFieldLayout(makeFieldLayout({ seed: 42 }));
@@ -286,7 +284,7 @@ describe('ParticleField', () => {
     });
 
     it('does not redraw on step() when layout unchanged', () => {
-      const field = new ParticleField(newScene(), WIDTH, HEIGHT, PARTICLE_COUNT, 'particle_circle');
+      const field = new ParticleField(newScene(), PARTICLE_COUNT, 'particle_circle');
       const internals = getInternals(field);
 
       field.setFieldLayout(makeFieldLayout());
@@ -298,7 +296,7 @@ describe('ParticleField', () => {
     });
 
     it('setFieldLayout(null) does not change layoutVersion', () => {
-      const field = new ParticleField(newScene(), WIDTH, HEIGHT, PARTICLE_COUNT, 'particle_circle');
+      const field = new ParticleField(newScene(), PARTICLE_COUNT, 'particle_circle');
       const internals = getInternals(field);
       const prev = internals.layoutVersion;
       field.setFieldLayout(null);

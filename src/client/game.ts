@@ -9,16 +9,13 @@ import { Preloader } from './scenes/Preloader';
 const config: Phaser.Types.Core.GameConfig = {
   type: WEBGL,
   parent: 'game-container',
-  backgroundColor: '#028af8',
+  backgroundColor: '#0d0e15',
   banner: false,
-  render: {
-    roundPixels: true,
-  },
   scale: {
-    mode: Phaser.Scale.RESIZE,
+    mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
-    width: 1024,
-    height: 768,
+    width: 1920,
+    height: 1080,
   },
   scene: [Boot, Preloader, MainMenu, MainGame, GameOver],
 };

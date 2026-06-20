@@ -5,8 +5,6 @@ import {
   NODE_LIFESPAN_MS,
   DAILY_RESET_HOUR_UTC,
   NodeType,
-  DeviceTier,
-  detectDeviceTier,
   createEmptySnapshot,
   type SnapshotSeed,
 } from '../contract';
@@ -26,25 +24,6 @@ describe('Constants', () => {
 
   it('DAILY_RESET_HOUR_UTC equals 0', () => {
     expect(DAILY_RESET_HOUR_UTC).toBe(0);
-  });
-});
-
-describe('detectDeviceTier', () => {
-  it('returns Phone when width <= 480', () => {
-    expect(detectDeviceTier(0)).toBe(DeviceTier.Phone);
-    expect(detectDeviceTier(240)).toBe(DeviceTier.Phone);
-    expect(detectDeviceTier(480)).toBe(DeviceTier.Phone);
-  });
-
-  it('returns Tablet when 480 < width <= 1024', () => {
-    expect(detectDeviceTier(481)).toBe(DeviceTier.Tablet);
-    expect(detectDeviceTier(750)).toBe(DeviceTier.Tablet);
-    expect(detectDeviceTier(1024)).toBe(DeviceTier.Tablet);
-  });
-
-  it('returns Desktop when width > 1024', () => {
-    expect(detectDeviceTier(1025)).toBe(DeviceTier.Desktop);
-    expect(detectDeviceTier(1920)).toBe(DeviceTier.Desktop);
   });
 });
 

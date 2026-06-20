@@ -10,15 +10,12 @@ import {
 import { ParticleField } from '../simulation';
 import {
   BridgeMessageType,
-  DeviceTier,
   NodeDeployRejectionReason,
   NodeRemovalReason,
   NodeType,
   ScoreUpdateReason,
-  detectDeviceTier,
 } from '../../shared/api';
-import { PROFILES, type UIProfile } from '../ui-profiles';
-import { LOGICAL_FIELD_HEIGHT, LOGICAL_FIELD_WIDTH } from '../../shared/field-layout';
+import { LOGICAL_FIELD_HEIGHT, LOGICAL_FIELD_WIDTH, VIRTUAL_FIELD_HEIGHT, VIRTUAL_FIELD_WIDTH } from '../../shared/field-layout';
 import type {
   ArchiveEntry,
   GameSnapshot,
@@ -47,8 +44,6 @@ type ToolUi = {
   icon: Phaser.GameObjects.Graphics;
   selectHitArea: Phaser.GameObjects.Zone;
 };
-
-const MAX_BACKOFF_ATTEMPTS = 3;
 const POLL_INTERVAL_MS = 5_000;
 const CONNECTIVITY_FAILURE_THRESHOLD = 3;
 
@@ -98,6 +93,8 @@ const UI_TEXT = {
   pending: '\u231B',
 } as const;
 
+const MAX_BACKOFF_ATTEMPTS = 3;
+
 export class Game extends Scene {
   camera: Phaser.Cameras.Scene2D.Camera;
   background: GameObjects.Rectangle;
@@ -131,12 +128,8 @@ export class Game extends Scene {
   private syncSpinner!: GameObjects.Text;
   private pendingDeployIndicator!: GameObjects.Text;
   private statusTimestamp = 0;
-  private currentTier: DeviceTier = DeviceTier.Desktop;
   private fpsText: GameObjects.Text | null = null;
 
-  private get currentProfile(): UIProfile {
-    return PROFILES[this.currentTier];
-  }
   private readonly handleToolKeyOne = () => this.selectTool(NodeType.Attractor);
   private readonly handleToolKeyTwo = () => this.selectTool(NodeType.Repeller);
   private readonly handleToolKeyThree = () => this.selectTool(NodeType.Vortex);
@@ -170,8 +163,6 @@ export class Game extends Scene {
   }
 
   create() {
-    this.currentTier = detectDeviceTier(this.scale.width);
-
     this.camera = this.cameras.main;
     this.camera.setBackgroundColor('#0d0e15');
 
@@ -181,44 +172,42 @@ export class Game extends Scene {
     this.playfieldFrame = this.add.graphics();
     this.dockRail = this.add.graphics();
 
-    const p = this.currentProfile;
-
-    this.titleText = this.add.text(0, 0, 'Resonance Field', {
+    this.titleText = this.add.text(32, 26, 'Resonance Field', {
       fontFamily: 'Arial Black',
-      fontSize: p.fonts.titleSize,
+      fontSize: '40px',
       color: '#e7ffff',
       stroke: '#00151a',
       strokeThickness: 8,
     });
-    this.subtitleText = this.add.text(0, 0, UI_TEXT.subtitle, {
+    this.subtitleText = this.add.text(34, 72, UI_TEXT.subtitle, {
       fontFamily: 'monospace',
-      fontSize: p.fonts.subtitleSize,
+      fontSize: '16px',
       color: '#8feeff',
     });
-    this.statusText = this.add.text(0, 0, UI_TEXT.defaultStatus, {
+    this.statusText = this.add.text(34, 106, UI_TEXT.defaultStatus, {
       fontFamily: 'monospace',
-      fontSize: p.fonts.statusSize,
+      fontSize: '18px',
       color: '#c7f9ff',
     });
-    this.scoreText = this.add.text(0, 0, `${UI_TEXT.scorePrefix} 0`, {
+    this.scoreText = this.add.text(1680, 28, `${UI_TEXT.scorePrefix} 0`, {
       fontFamily: 'monospace',
-      fontSize: p.fonts.scoreSize,
+      fontSize: '22px',
       color: '#ffaa00',
     });
-    this.timerText = this.add.text(0, 0, `${UI_TEXT.resetTimerPrefix} 00:00:00`, {
+    this.timerText = this.add.text(1680, 58, `${UI_TEXT.resetTimerPrefix} 00:00:00`, {
       fontFamily: 'monospace',
-      fontSize: p.fonts.timerSize,
+      fontSize: '18px',
       color: '#ffffff',
     });
-    this.nodeQuotaText = this.add.text(0, 0, `${UI_TEXT.toolPrefix} 0 / 3`, {
+    this.nodeQuotaText = this.add.text(1680, 88, `${UI_TEXT.toolPrefix} 0 / 3`, {
       fontFamily: 'monospace',
-      fontSize: p.fonts.quotaSize,
+      fontSize: '18px',
       color: '#ff5b86',
     });
 
-    this.archiveButton = this.add.text(0, 0, 'ARCHIVE', {
+    this.archiveButton = this.add.text(1800, 90, 'ARCHIVE', {
       fontFamily: 'monospace',
-      fontSize: p.fonts.archiveButtonSize,
+      fontSize: '14px',
       color: '#00f0ff',
       backgroundColor: '#101420',
       padding: { x: 8, y: 4 },
@@ -243,9 +232,7 @@ export class Game extends Scene {
 
     this.simulation = new ParticleField(
       this,
-      this.scale.width,
-      this.scale.height,
-      p.simulation.particleCount,
+      180,
       'particle_circle',
     );
     this.dockContainer = this.add.container(0, 0);
@@ -285,11 +272,11 @@ export class Game extends Scene {
       }).setDepth(100).setScrollFactor(0);
     }
 
-    this.refreshLayout();
-    this.scale.on('resize', (gameSize: Phaser.Structs.Size) => {
-      this.currentTier = detectDeviceTier(gameSize.width);
-      this.refreshLayout(gameSize.width, gameSize.height);
-    });
+    this.drawAtmosphere();
+    this.drawGrid();
+    this.drawFrame();
+    this.drawDockRail();
+    this.updateToolDock();
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown);
     this.input.on('pointerdown', this.handlePointerDown);
@@ -316,10 +303,9 @@ export class Game extends Scene {
   }
 
   private createToolDock(): Record<NodeType, ToolUi> {
-    const { spacing } = this.currentProfile.dock;
-    const attractorCard = this.createToolDockCard(TOOL_CARDS[0]!, -spacing);
+    const attractorCard = this.createToolDockCard(TOOL_CARDS[0]!, -200);
     const repellerCard = this.createToolDockCard(TOOL_CARDS[1]!, 0);
-    const vortexCard = this.createToolDockCard(TOOL_CARDS[2]!, spacing);
+    const vortexCard = this.createToolDockCard(TOOL_CARDS[2]!, 200);
 
     return {
       [NodeType.Attractor]: attractorCard,
@@ -329,23 +315,21 @@ export class Game extends Scene {
   }
 
   private createToolDockCard(card: ToolCard, x: number): ToolUi {
-    const d = this.currentProfile.dock;
-    const p = this.currentProfile;
     const panel = this.add.container(x, 0);
-    const badge = this.add.rectangle(0, 0, d.cardWidth, d.cardHeight, 0x101420, 0.92);
-    const title = this.add.text(d.cardTitleOffsetX, d.cardTitleOffsetY, card.label, {
+    const badge = this.add.rectangle(0, 0, 168, 118, 0x101420, 0.92);
+    const title = this.add.text(-72, -36, card.label, {
       fontFamily: 'Arial Black',
-      fontSize: p.fonts.dockTitleSize,
+      fontSize: '18px',
       color: '#f6ffff',
     });
-    const detail = this.add.text(d.cardDetailOffsetX, d.cardDetailOffsetY, card.description, {
+    const detail = this.add.text(-72, -4, card.description, {
       fontFamily: 'monospace',
-      fontSize: p.fonts.dockDetailSize,
+      fontSize: '12px',
       color: '#9cb7c4',
-      ...(d.cardDetailWidth > 0 ? { wordWrap: { width: d.cardDetailWidth } } : {}),
+      wordWrap: { width: 148 },
     });
     const icon = this.add.graphics();
-    const selectHitArea = this.add.zone(0, 0, d.cardWidth, d.cardHeight).setOrigin(0.5).setInteractive({
+    const selectHitArea = this.add.zone(0, 0, 168, 118).setOrigin(0.5).setInteractive({
       useHandCursor: true,
     });
 
@@ -408,8 +392,8 @@ export class Game extends Scene {
   private handlePointerDown = (pointer: Phaser.Input.Pointer) => {
     if (this.isArchiveOpen) {
       if (!this.archivePanel || !this.archivePanelBg) return;
-      const panelX = this.scale.width / 2;
-      const panelY = this.scale.height / 2;
+      const panelX = 960;
+      const panelY = 540;
       const halfW = 200;
       const halfH = 150;
       if (pointer.x < panelX - halfW || pointer.x > panelX + halfW ||
@@ -419,12 +403,6 @@ export class Game extends Scene {
       }
     }
 
-    // Selecting a tool from the bottom dock or the archive button should only
-    // change the active tool (handled by those objects' own pointerdown
-    // listeners) and must NOT place a node in the playfield. Phaser fires the
-    // scene-level pointerdown for every press including presses on interactive
-    // game objects, so we explicitly skip placement when the press landed on a
-    // dock card hit-area or the archive button.
     if (this.pointerHitInteractiveUi(pointer)) {
       return;
     }
@@ -433,8 +411,8 @@ export class Game extends Scene {
       return;
     }
 
-    const logicalX = (pointer.worldX / this.scale.width) * LOGICAL_FIELD_WIDTH;
-    const logicalY = (pointer.worldY / this.scale.height) * LOGICAL_FIELD_HEIGHT;
+    const logicalX = (pointer.x * LOGICAL_FIELD_WIDTH) / VIRTUAL_FIELD_WIDTH;
+    const logicalY = (pointer.y * LOGICAL_FIELD_HEIGHT) / VIRTUAL_FIELD_HEIGHT;
 
     this.deployQueue.push({
       type: this.selectedTool,
@@ -640,8 +618,8 @@ export class Game extends Scene {
 
   private showResetOverlay(archivedScore: number) {
     const overlayText = this.add.text(
-      this.scale.width / 2,
-      this.scale.height / 2,
+      960,
+      540,
       `Day archived — Score: ${archivedScore}`,
       {
         fontFamily: 'monospace',
@@ -760,39 +738,20 @@ export class Game extends Scene {
 
   private updateToolDock() {
     const activeTool = this.snapshot?.selectedTool ?? this.selectedTool;
-    const d = this.currentProfile.dock;
-    const {
-      activeIconArcEndDeg,
-      activeIconArcRadius,
-      activeIconArcStartDeg,
-      activeIconCircleRadii,
-      iconCenterY,
-      iconInactiveArcRadius,
-      iconInactiveCircleRadii,
-      iconTriangleBottomY,
-      iconTriangleLeftX,
-      iconTriangleRightX,
-      iconTriangleTopY,
-      panelYFromBottom,
-      toolRejectedFillAlpha,
-      toolSelectedBorderWidth,
-      toolSelectedFillAlpha,
-      toolSelectedStrokeWidth,
-    } = d;
 
     TOOL_CARDS.forEach((card, index) => {
       const ui = this.toolUi[card.key];
       const isActive = card.key === activeTool;
       const isRejected = card.key === this.rejectedTool;
-      const x = (index - 1) * d.spacing;
+      const x = (index - 1) * 200;
 
-      ui.panel.setPosition(this.scale.width / 2 + x, this.scale.height - panelYFromBottom);
+      ui.panel.setPosition(960 + x, 976);
       ui.badge.setFillStyle(
         isRejected ? 0xff0055 : card.accent,
-        isRejected ? toolRejectedFillAlpha : isActive ? toolSelectedFillAlpha : 0.12
+        isRejected ? 0.22 : isActive ? 0.1 : 0.12
       );
       ui.badge.setStrokeStyle(
-        isRejected ? 4 : isActive ? toolSelectedBorderWidth : 1,
+        isRejected ? 4 : isActive ? 3 : 1,
         isRejected ? 0xff0055 : card.accent,
         isRejected || isActive ? 1 : 0.4
       );
@@ -801,42 +760,28 @@ export class Game extends Scene {
 
       ui.icon.clear();
       ui.icon.lineStyle(
-        isRejected ? 4 : isActive ? toolSelectedStrokeWidth : 2,
+        isRejected ? 4 : isActive ? 3 : 2,
         isRejected ? 0xff0055 : card.accent,
         1
       );
-      ui.icon.fillStyle(isRejected ? 0xff0055 : card.accent, isActive ? toolSelectedFillAlpha : 0.1);
+      ui.icon.fillStyle(isRejected ? 0xff0055 : card.accent, isActive ? 0.1 : 0.1);
 
       if (card.key === NodeType.Attractor) {
-        const radii = isActive ? activeIconCircleRadii : iconInactiveCircleRadii;
-        ui.icon.strokeCircle(0, iconCenterY, radii[0]);
-        ui.icon.strokeCircle(0, iconCenterY, radii[1]);
-        ui.icon.strokeCircle(0, iconCenterY, radii[2]);
+        const radii: [number, number, number] = isActive ? [18, 28, 38] : [16, 26, 36];
+        ui.icon.strokeCircle(0, -8, radii[0]);
+        ui.icon.strokeCircle(0, -8, radii[1]);
+        ui.icon.strokeCircle(0, -8, radii[2]);
       } else if (card.key === NodeType.Repeller) {
-        ui.icon.strokeTriangle(
-          iconTriangleLeftX,
-          iconTriangleBottomY,
-          0,
-          iconTriangleTopY,
-          iconTriangleRightX,
-          iconTriangleBottomY
-        );
-        ui.icon.fillTriangle(
-          iconTriangleLeftX,
-          iconTriangleBottomY,
-          0,
-          iconTriangleTopY,
-          iconTriangleRightX,
-          iconTriangleBottomY
-        );
+        ui.icon.strokeTriangle(-22, 16, 0, -20, 22, 16);
+        ui.icon.fillTriangle(-22, 16, 0, -20, 22, 16);
       } else {
         ui.icon.beginPath();
         ui.icon.arc(
           0,
           -4,
-          isActive ? activeIconArcRadius : iconInactiveArcRadius,
-          Phaser.Math.DegToRad(activeIconArcStartDeg),
-          Phaser.Math.DegToRad(activeIconArcEndDeg),
+          isActive ? 25 : 21,
+          Phaser.Math.DegToRad(30),
+          Phaser.Math.DegToRad(330),
           false
         );
         ui.icon.strokePath();
@@ -857,144 +802,87 @@ export class Game extends Scene {
     });
   }
 
-  private refreshLayout(width = this.scale.width, height = this.scale.height) {
-    this.cameras.resize(width, height);
-    this.background.setSize(width, height);
-    this.simulation.setSize(width, height);
-
-    const profile = this.currentProfile;
-
-    if (this.currentTier === DeviceTier.Phone) {
-      this.drawAtmosphere(width, height);
-      this.drawGrid(width, height);
-      this.drawDockRail(width, height);
-
-      this.scoreText.setPosition(profile.layout.leftMargin, profile.layout.scoreY);
-      this.timerText.setPosition(profile.layout.leftMargin + 78, profile.layout.scoreY);
-      this.nodeQuotaText.setPosition(profile.layout.leftMargin + 156, profile.layout.scoreY);
-
-      this.titleText.setVisible(false);
-      this.subtitleText.setVisible(false);
-      this.statusText.setVisible(false);
-      if (this.archiveButton) {
-        this.archiveButton.setPosition(width - 48, profile.layout.scoreY + 2);
-      }
-      this.playfieldFrame.setVisible(false);
-    } else {
-      this.drawAtmosphere(width, height);
-      this.drawGrid(width, height);
-      this.drawFrame(width, height);
-      this.drawDockRail(width, height);
-
-      this.titleText.setPosition(profile.layout.leftMargin, profile.layout.titleY);
-      this.subtitleText.setPosition(profile.layout.leftMargin + 2, profile.layout.subtitleY);
-      this.statusText.setPosition(profile.layout.leftMargin + 2, profile.layout.statusY);
-      this.scoreText.setPosition(width - profile.layout.rightMetricsWidth, profile.layout.scoreY);
-      this.timerText.setPosition(width - profile.layout.rightMetricsWidth, profile.layout.timerY);
-      this.nodeQuotaText.setPosition(width - profile.layout.rightMetricsWidth, profile.layout.quotaY);
-      if (this.archiveButton) {
-        this.archiveButton.setPosition(width - profile.layout.rightMetricsWidth + 120, profile.layout.quotaY + 2);
-      }
-
-      this.titleText.setVisible(true);
-      this.subtitleText.setVisible(true);
-      this.statusText.setVisible(true);
-      this.playfieldFrame.setVisible(true);
-    }
-
-    if (this.isArchiveOpen && this.archivePanel) {
-      this.positionArchivePanel(width, height);
-    }
-
-    this.updateToolDock();
-  }
-
-  private drawAtmosphere(width: number, height: number) {
-    const atm = this.currentProfile.atmosphere;
+  private drawAtmosphere() {
     this.atmosphere.clear();
     this.atmosphere.fillStyle(0x00f0ff, 0.08);
     this.atmosphere.fillCircle(
-      width * 0.18,
-      height * 0.22,
-      Math.min(width, height) * atm.attractorRadiusRatio
+      345.6,
+      237.6,
+      237.6
     );
     this.atmosphere.fillStyle(0xff0055, 0.08);
     this.atmosphere.fillCircle(
-      width * 0.82,
-      height * 0.18,
-      Math.min(width, height) * atm.repelRadiusRatio
+      1574.4,
+      194.4,
+      194.4
     );
     this.atmosphere.fillStyle(0xffaa00, 0.08);
     this.atmosphere.fillCircle(
-      width * 0.56,
-      height * 0.82,
-      Math.min(width, height) * atm.helixRadiusRatio
+      1075.2,
+      885.6,
+      216
     );
   }
 
-  private drawGrid(width: number, height: number) {
+  private drawGrid() {
     this.grid.clear();
     this.grid.lineStyle(1, 0x1a2a36, 0.4);
     const step = 64;
 
-    for (let x = 0; x <= width; x += step) {
-      this.grid.lineBetween(x, 0, x, height);
+    for (let x = 0; x <= 1920; x += step) {
+      this.grid.lineBetween(x, 0, x, 1080);
     }
 
-    for (let y = 0; y <= height; y += step) {
-      this.grid.lineBetween(0, y, width, y);
+    for (let y = 0; y <= 1080; y += step) {
+      this.grid.lineBetween(0, y, 1920, y);
     }
   }
 
-  private drawFrame(width: number, height: number) {
-    const f = this.currentProfile.frame;
-    const d = this.currentProfile.dock;
+  private drawFrame() {
     this.playfieldFrame.clear();
     this.playfieldFrame.lineStyle(2, 0x00f0ff, 0.45);
     this.playfieldFrame.strokeRoundedRect(
-      f.outerInset,
-      f.outerInset,
-      width - f.outerInset * 2,
-      height - d.railInsetBottom - f.outerInset,
-      f.outerCornerRadius
+      18,
+      18,
+      1920 - 36,
+      1080 - 132 - 18,
+      24
     );
     this.playfieldFrame.lineStyle(1, 0xff0055, 0.28);
     this.playfieldFrame.strokeRoundedRect(
-      f.innerInset,
-      f.innerInset,
-      width - f.innerInset * 2,
-      height - d.railInsetInner - f.innerInset,
-      f.innerCornerRadius
+      28,
+      28,
+      1920 - 56,
+      1080 - 122 - 28,
+      18
     );
   }
 
-  private drawDockRail(width: number, height: number) {
-    const d = this.currentProfile.dock;
-    const dr = this.currentProfile.dockRail;
+  private drawDockRail() {
     this.dockRail.clear();
-    this.dockRail.fillStyle(0x0b1019, dr.backgroundAlpha);
+    this.dockRail.fillStyle(0x0b1019, 0.88);
     this.dockRail.fillRoundedRect(
-      dr.backgroundInset,
-      height - d.railInsetBottom,
-      width - dr.backgroundInset * 2,
-      d.railHeight,
-      d.railHeight / 4
+      24,
+      1080 - 132,
+      1920 - 48,
+      108,
+      27
     );
-    this.dockRail.lineStyle(1, 0x00f0ff, dr.strokeAlpha);
+    this.dockRail.lineStyle(1, 0x00f0ff, 0.5);
     this.dockRail.strokeRoundedRect(
-      dr.backgroundInset,
-      height - d.railInsetBottom,
-      width - dr.backgroundInset * 2,
-      d.railHeight,
-      d.railHeight / 4
+      24,
+      1080 - 132,
+      1920 - 48,
+      108,
+      27
     );
     this.dockRail.lineStyle(1, 0xff0055, 0.18);
     this.dockRail.strokeRoundedRect(
-      dr.innerBorderInset,
-      height - d.railInsetInner,
-      width - dr.innerBorderWidthInset,
-      dr.innerBackgroundHeight,
-      dr.innerBorderCornerRadius
+      34,
+      1080 - 122,
+      1920 - 68,
+      88,
+      18
     );
   }
 
@@ -1126,9 +1014,9 @@ export class Game extends Scene {
     this.archiveEntryContainer = null;
   }
 
-  private positionArchivePanel(width: number, height: number) {
+  private positionArchivePanel() {
     if (!this.archivePanel) return;
-    this.archivePanel.setPosition(width / 2, height / 2);
+    this.archivePanel.setPosition(960, 540);
   }
 
   private toggleArchive() {
@@ -1144,7 +1032,7 @@ export class Game extends Scene {
     if (this.archivePanel) {
       this.archivePanel.setVisible(true);
     }
-    this.positionArchivePanel(this.scale.width, this.scale.height);
+    this.positionArchivePanel();
 
     if (this.archiveCache) {
       this.renderArchiveEntries(this.archiveCache);
@@ -1374,7 +1262,7 @@ export class Game extends Scene {
   private updateSyncSpinner() {
     if (this.throughputRetryQueue.length > 0) {
       this.syncSpinner.setText(UI_TEXT.retrying);
-      this.syncSpinner.setPosition(this.scale.width - this.currentProfile.layout.rightMetricsWidth + 180, this.currentProfile.layout.scoreY + 2);
+      this.syncSpinner.setPosition(1860, 30);
       this.syncSpinner.setVisible(true);
     } else {
       this.syncSpinner.setVisible(false);
@@ -1433,7 +1321,7 @@ export class Game extends Scene {
     this.pendingDeployIndicator.setText(`${UI_TEXT.pending} ${count}`);
     this.pendingDeployIndicator.setPosition(
       ui.panel.x + 60,
-      ui.panel.y - this.currentProfile.dock.cardHeight / 2 - 14
+      ui.panel.y - 118 / 2 - 14
     );
     this.pendingDeployIndicator.setVisible(true);
   }
