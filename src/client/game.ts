@@ -28,5 +28,6 @@ const StartGame = (parent: string) => {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
-  StartGame('game-container');
+  const game = StartGame('game-container');
+  (window as unknown as Record<string, unknown>).__PHASER_GAME__ = game;
 });
