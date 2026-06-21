@@ -77,19 +77,19 @@ const TOOL_CARDS: ToolCard[] = [
     accent: 0x00f0ff,
     description: 'Pull fluid into narrow channels',
     key: NodeType.Attractor,
-    label: 'Gravity Well',
+    label: 'Gravity Well [1]',
   },
   {
     accent: 0xff0055,
     description: 'Push streams away from obstacles',
     key: NodeType.Repeller,
-    label: 'Deflection Prism',
+    label: 'Deflection Prism [2]',
   },
   {
     accent: 0xffaa00,
     description: 'Spin particles into orbit',
     key: NodeType.Vortex,
-    label: 'Vortex Helix',
+    label: 'Vortex Helix [3]',
   },
 ];
 
@@ -432,7 +432,7 @@ export class Game extends Scene {
       cardW = cardH;
       spacing = cardW + Math.round(12 * sf);
     } else if (tier === 'desktop') {
-      cardW = Math.round(110 * sf);
+      cardW = Math.round(120 * sf);
       spacing = cardW + Math.round(24 * sf);
     } else {
       cardW = Math.round(150 * sf);
@@ -443,8 +443,16 @@ export class Game extends Scene {
       0.5,
       Math.min(tier === 'mobile' ? 1.2 : 1.0, cardW / (tier === 'mobile' ? 90 : 140)),
     );
-    const iconCenterY = tier === 'mobile' ? 0 : -Math.round(cardH / 3);
-    const titleCenterY = tier === 'desktop' ? Math.round(cardH / 6) : -Math.round(cardH / 12);
+    const iconCenterY =
+      tier === 'mobile'
+        ? 0
+        : -Math.round(cardH / 2) + Math.round(46 * iconScale) + Math.round(8 * sf);
+    const titleCenterY =
+      tier === 'desktop'
+        ? Math.round(cardH / 4)
+        : tier === 'fullscreen'
+          ? Math.round(cardH / 12)
+          : 0;
     const detailCenterY = Math.round(cardH / 3);
 
     const titleFontSize = tier === 'fullscreen' ? this.uiFontSize(20) : this.uiFontSize(16);
@@ -772,6 +780,7 @@ export class Game extends Scene {
           this.realtimeConnection = null;
         },
         onMessage: (data: unknown) => {
+          console.log('[Realtime] Received message:', data);
           this.handleRealtimeEvent(data as RealtimeEvent);
         },
       });
@@ -783,6 +792,7 @@ export class Game extends Scene {
   private handleRealtimeEvent(event: RealtimeEvent) {
     switch (event.type) {
       case 'node_added':
+        console.log('Node added:', event.node);
         // Ignore our own deploys — the HTTP response already applied them.
         if (event.node.ownerId !== this.snapshot?.username) {
           this.applyServerMessage({
@@ -793,6 +803,7 @@ export class Game extends Scene {
         break;
 
       case 'node_removed':
+        console.log('Node removed:', event.nodeId);
         this.applyServerMessage({
           type: BridgeMessageType.NodeRemoved,
           data: { nodeId: event.nodeId, reason: NodeRemovalReason.Quota },
@@ -800,6 +811,7 @@ export class Game extends Scene {
         break;
 
       case 'score_updated':
+        console.log('Score updated:', event.score);
         // Only apply if the score is higher than what we already have locally
         // (our own throughput flush already updates the snapshot optimistically).
         if (this.snapshot && event.score > this.snapshot.globalScore) {
@@ -1042,7 +1054,7 @@ export class Game extends Scene {
       if (card.key === NodeType.Attractor) {
         const radii: [number, number, number] = isActive ? [18, 28, 38] : [16, 26, 36];
         const y = iconCy + (isMobile ? 0 : Math.round(-8 * iconScale));
-        ui.icon.strokeCircle(0, y, radii[0] * iconScale);
+        ui.icon.strokeCircle(0, y + 100, radii[0] * iconScale);
         ui.icon.strokeCircle(0, y, radii[1] * iconScale);
         ui.icon.strokeCircle(0, y, radii[2] * iconScale);
       } else if (card.key === NodeType.Repeller) {
