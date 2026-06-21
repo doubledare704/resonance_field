@@ -7,6 +7,7 @@ import {
   selectToolRequest,
   submitThroughputRequest,
 } from '../bridge';
+import { connectRealtime } from '@devvit/web/client';
 import { ParticleField } from '../simulation';
 import {
   BridgeMessageType,
@@ -25,6 +26,7 @@ import type {
   NodeDeployRejectedMessage,
   NodeDeployResponse,
   NodeRemovedMessage,
+  RealtimeEvent,
   ServerBridgeMessage,
   ThroughputResponse,
 } from '../../shared/api';
@@ -44,7 +46,7 @@ type ToolUi = {
   icon: Phaser.GameObjects.Graphics;
   selectHitArea: Phaser.GameObjects.Zone;
 };
-const POLL_INTERVAL_MS = 5_000;
+const POLL_INTERVAL_MS = 30_000; // Relaxed — realtime channel handles live sync
 const CONNECTIVITY_FAILURE_THRESHOLD = 3;
 
 const TOOL_CARDS: ToolCard[] = [
@@ -129,6 +131,7 @@ export class Game extends Scene {
   private pendingDeployIndicator!: GameObjects.Text;
   private statusTimestamp = 0;
   private fpsText: GameObjects.Text | null = null;
+  private realtimeConnection: { disconnect: () => Promise<void> } | null = null;
 
   private readonly handleToolKeyOne = () => this.selectTool(NodeType.Attractor);
   private readonly handleToolKeyTwo = () => this.selectTool(NodeType.Repeller);
@@ -287,11 +290,13 @@ export class Game extends Scene {
     this.input.keyboard?.on('keydown-ESC', this.handleArchiveEscape);
     this.throughputTimer = this.time.addEvent({
       callback: this.flushThroughput,
+      callbackScope: this,
       delay: 10_000,
       loop: true,
     });
     this.pollTimer = this.time.addEvent({
       callback: this.pollServerState,
+      callbackScope: this,
       delay: POLL_INTERVAL_MS,
       loop: true,
     });
@@ -354,6 +359,8 @@ export class Game extends Scene {
     this.deployQueue = [];
     this.deployInFlight = false;
     this.currentDeployItem = null;
+    void this.realtimeConnection?.disconnect();
+    this.realtimeConnection = null;
     this.input.off('pointerdown', this.handlePointerDown);
     this.input.keyboard?.off('keydown-ONE', this.handleToolKeyOne);
     this.input.keyboard?.off('keydown-TWO', this.handleToolKeyTwo);
@@ -558,11 +565,77 @@ export class Game extends Scene {
         type: BridgeMessageType.InitialSnapshot,
         data: response.data.snapshot,
       });
+
+      // Connect to the realtime channel now that we have a postId.
+      void this.connectRealtimeChannel(response.data.snapshot.postId);
     } catch (error) {
       console.error('Failed to fetch initial snapshot:', error);
       this.consecutiveNetworkFailures++;
       this.checkSyncStalledState();
       this.statusText.setText(UI_TEXT.snapshotFailed);
+    }
+  }
+
+  private async connectRealtimeChannel(postId: string) {
+    if (this.realtimeConnection) {
+      return; // Already connected.
+    }
+
+    try {
+      this.realtimeConnection = await connectRealtime({
+        channel: `resonance_field_${postId}`,
+        onConnect: () => {
+          console.log('[Realtime] Connected to field channel');
+        },
+        onDisconnect: () => {
+          console.log('[Realtime] Disconnected from field channel');
+          this.realtimeConnection = null;
+        },
+        onMessage: (data: unknown) => {
+          this.handleRealtimeEvent(data as RealtimeEvent);
+        },
+      });
+    } catch (error) {
+      console.error('[Realtime] Failed to connect:', error);
+    }
+  }
+
+  private handleRealtimeEvent(event: RealtimeEvent) {
+    switch (event.type) {
+      case 'node_added':
+        // Ignore our own deploys — the HTTP response already applied them.
+        if (event.node.ownerId !== this.snapshot?.username) {
+          this.applyServerMessage({
+            type: BridgeMessageType.NodeAdded,
+            data: { node: event.node },
+          });
+        }
+        break;
+
+      case 'node_removed':
+        this.applyServerMessage({
+          type: BridgeMessageType.NodeRemoved,
+          data: { nodeId: event.nodeId, reason: NodeRemovalReason.Quota },
+        });
+        break;
+
+      case 'score_updated':
+        // Only apply if the score is higher than what we already have locally
+        // (our own throughput flush already updates the snapshot optimistically).
+        if (this.snapshot && event.score > this.snapshot.globalScore) {
+          this.applyServerMessage({
+            type: BridgeMessageType.GlobalScoreUpdated,
+            data: {
+              score: event.score,
+              delta: event.delta,
+              reason: ScoreUpdateReason.Batch,
+            },
+          });
+        }
+        break;
+
+      default:
+        break;
     }
   }
 

@@ -27,6 +27,7 @@ vi.mock('@devvit/web/server', () => ({
   redis: mocks.redis,
   context: mocks.context,
   reddit: mocks.reddit,
+  realtime: { send: vi.fn().mockResolvedValue(undefined) },
 }));
 
 import {
@@ -662,6 +663,10 @@ describe('submitThroughput — Score Batching', () => {
       expect(result.scoreDelta).toBe(5);
       expect(result.snapshot.globalScore).toBe(5);
     }
+    const saved = mocks.store.get('resonance:state:test-post-id');
+    expect(saved).toBeDefined();
+    const state = JSON.parse(saved!);
+    expect(state.globalScore).toBe(5);
   });
 
   it('accepts count of 1', async () => {

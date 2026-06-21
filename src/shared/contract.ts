@@ -226,6 +226,14 @@ export type ErrorResponse = {
   message: string;
 };
 
+/** Compact payloads sent over the Devvit realtime channel (kept under 200 bytes). */
+export type RealtimeEvent =
+  | { type: 'node_added'; node: GameNode }
+  | { type: 'node_removed'; nodeId: string }
+  | { type: 'score_updated'; score: number; delta: number };
+
+
+
 export type SnapshotSeed = {
   postId: string;
   username: string;

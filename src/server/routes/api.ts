@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { context } from '@devvit/web/server';
+import { context, realtime } from '@devvit/web/server';
 import {
   buildInitialResponse,
   deployNode,
@@ -14,12 +14,16 @@ import type {
   HistoryResponse,
   NodeDeployMessage,
   NodeDeployResponse,
+  RealtimeEvent,
   ResetResponse,
   SubmitThroughputMessage,
   ThroughputResponse,
   ToolSelectMessage,
   ToolSelectResponse,
 } from '../../shared/api';
+
+/** Channel name for a post — colons are not allowed in Devvit channel names. */
+const realtimeChannel = (postId: string) => `resonance_field_${postId}`;
 
 export const api = new Hono();
 
@@ -85,6 +89,24 @@ api.post('/node-deploy', async (c) => {
       );
     }
 
+    // Broadcast to all connected clients on this post's realtime channel.
+    const postId = context.postId;
+    if (postId) {
+      const addedEvent: RealtimeEvent = {
+        type: 'node_added',
+        node: result.node,
+      };
+      void realtime.send(realtimeChannel(postId), addedEvent);
+
+      if (result.removedNodeId) {
+        const removedEvent: RealtimeEvent = {
+          type: 'node_removed',
+          nodeId: result.removedNodeId,
+        };
+        void realtime.send(realtimeChannel(postId), removedEvent);
+      }
+    }
+
     return c.json<NodeDeployResponse>(
       {
         contractVersion: result.snapshot.contractVersion,
@@ -133,6 +155,17 @@ api.post('/throughput', async (c) => {
         },
         400
       );
+    }
+
+    // Broadcast the new global score to all clients.
+    const postId = context.postId;
+    if (postId) {
+      const scoreEvent: RealtimeEvent = {
+        type: 'score_updated',
+        score: result.snapshot.globalScore,
+        delta: result.scoreDelta,
+      };
+      void realtime.send(realtimeChannel(postId), scoreEvent);
     }
 
     return c.json<ThroughputResponse>(result, 200);

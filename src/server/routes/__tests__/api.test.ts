@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   submitThroughput: vi.fn(),
   resetDailyState: vi.fn(),
   getArchiveHistory: vi.fn(),
+  realtime: { send: vi.fn().mockResolvedValue(undefined) },
 }));
 
 vi.mock('../../core/resonance-field', () => ({
@@ -22,6 +23,7 @@ const ctx = vi.hoisted(() => ({
 
 vi.mock('@devvit/web/server', () => ({
   context: ctx,
+  realtime: mocks.realtime,
 }));
 
 import { api } from '../api';

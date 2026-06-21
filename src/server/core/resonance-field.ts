@@ -269,6 +269,7 @@ export const buildSnapshot = async (
   const { state, archivedScore } = await refreshStateForNow(seed);
   if (modifier) {
     await modifier(state);
+    await saveState(state);
   }
   const snapshot = toSnapshot(state, seed.username, archivedScore);
   return { snapshot, archivedScore, state };
