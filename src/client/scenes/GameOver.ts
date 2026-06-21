@@ -5,6 +5,7 @@ export class GameOver extends Scene {
   camera: Phaser.Cameras.Scene2D.Camera;
   background: Phaser.GameObjects.Image;
   gameover_text: Phaser.GameObjects.Text;
+  private resizeHandler: ((gameSize: Phaser.Structs.Size) => void) | null = null;
 
   constructor() {
     super('GameOver');
@@ -34,16 +35,26 @@ export class GameOver extends Scene {
     this.updateLayout(this.scale.width, this.scale.height);
 
     // Update layout on canvas resize / orientation change
-    this.scale.on('resize', (gameSize: Phaser.Structs.Size) => {
+    this.resizeHandler = (gameSize: Phaser.Structs.Size) => {
       const { width, height } = gameSize;
       this.updateLayout(width, height);
-    });
+    };
+    this.scale.on('resize', this.resizeHandler);
+
+    this.events.once('shutdown', this.handleShutdown);
 
     // Return to Main Menu on tap / click
     this.input.once('pointerdown', () => {
       this.scene.start('MainMenu');
     });
   }
+
+  private handleShutdown = () => {
+    if (this.resizeHandler) {
+      this.scale.off('resize', this.resizeHandler);
+      this.resizeHandler = null;
+    }
+  };
 
   private updateLayout(width: number, height: number): void {
     // Resize camera viewport to prevent black bars

@@ -16,7 +16,11 @@ import {
   NodeType,
   ScoreUpdateReason,
 } from '../../shared/api';
-import { LOGICAL_FIELD_HEIGHT, LOGICAL_FIELD_WIDTH, VIRTUAL_FIELD_HEIGHT, VIRTUAL_FIELD_WIDTH } from '../../shared/field-layout';
+import {
+  VIRTUAL_FIELD_WIDTH,
+  VIRTUAL_FIELD_HEIGHT,
+  canonicalToLogical,
+} from '../../shared/field-layout';
 import type {
   ArchiveEntry,
   GameSnapshot,
@@ -115,6 +119,9 @@ export class Game extends Scene {
   simulation!: ParticleField;
   snapshot: GameSnapshot | null = null;
   localPendingScore = 0;
+  private scaleFactor = 1;
+  private hudMargin = 0;
+  private dockMargin = 0;
   private throughputTimer?: Phaser.Time.TimerEvent;
   private pollTimer?: Phaser.Time.TimerEvent;
   private rejectionResetTimer: Phaser.Time.TimerEvent | null = null;
@@ -150,6 +157,7 @@ export class Game extends Scene {
     this.isOnline = false;
     this.onConnectivityLost();
   };
+  private resizeHandler: ((gameSize: Phaser.Structs.Size) => void) | null = null;
 
   archiveButton: GameObjects.Text | null = null;
   archivePanel: Phaser.GameObjects.Container | null = null;
@@ -175,40 +183,40 @@ export class Game extends Scene {
     this.playfieldFrame = this.add.graphics();
     this.dockRail = this.add.graphics();
 
-    this.titleText = this.add.text(32, 26, 'Resonance Field', {
+    this.titleText = this.add.text(0, 0, 'Resonance Field', {
       fontFamily: 'Arial Black',
       fontSize: '40px',
       color: '#e7ffff',
       stroke: '#00151a',
       strokeThickness: 8,
     });
-    this.subtitleText = this.add.text(34, 72, UI_TEXT.subtitle, {
+    this.subtitleText = this.add.text(0, 0, UI_TEXT.subtitle, {
       fontFamily: 'monospace',
       fontSize: '16px',
       color: '#8feeff',
     });
-    this.statusText = this.add.text(34, 106, UI_TEXT.defaultStatus, {
+    this.statusText = this.add.text(0, 0, UI_TEXT.defaultStatus, {
       fontFamily: 'monospace',
       fontSize: '18px',
       color: '#c7f9ff',
     });
-    this.scoreText = this.add.text(1680, 28, `${UI_TEXT.scorePrefix} 0`, {
+    this.scoreText = this.add.text(0, 0, `${UI_TEXT.scorePrefix} 0`, {
       fontFamily: 'monospace',
       fontSize: '22px',
       color: '#ffaa00',
     });
-    this.timerText = this.add.text(1680, 58, `${UI_TEXT.resetTimerPrefix} 00:00:00`, {
+    this.timerText = this.add.text(0, 0, `${UI_TEXT.resetTimerPrefix} 00:00:00`, {
       fontFamily: 'monospace',
       fontSize: '18px',
       color: '#ffffff',
     });
-    this.nodeQuotaText = this.add.text(1680, 88, `${UI_TEXT.toolPrefix} 0 / 3`, {
+    this.nodeQuotaText = this.add.text(0, 0, `${UI_TEXT.toolPrefix} 0 / 3`, {
       fontFamily: 'monospace',
       fontSize: '18px',
       color: '#ff5b86',
     });
 
-    this.archiveButton = this.add.text(1800, 90, 'ARCHIVE', {
+    this.archiveButton = this.add.text(0, 0, 'ARCHIVE', {
       fontFamily: 'monospace',
       fontSize: '14px',
       color: '#00f0ff',
@@ -217,7 +225,7 @@ export class Game extends Scene {
     }).setInteractive({ useHandCursor: true }).setOrigin(0.5, 0);
     this.archiveButton.on('pointerdown', () => this.toggleArchive());
 
-    this.connectivityIndicator = this.add.text(8, 8, '', {
+    this.connectivityIndicator = this.add.text(0, 0, '', {
       fontFamily: 'monospace',
       fontSize: '10px',
       color: '#ff0055',
@@ -241,6 +249,9 @@ export class Game extends Scene {
     this.dockContainer = this.add.container(0, 0);
     this.toolUi = this.createToolDock();
     this.createArchivePanel();
+    this.createfpsText();
+
+    this.refreshLayout(this.scale.width, this.scale.height);
 
     this.background.setDepth(0);
     this.atmosphere.setDepth(1);
@@ -263,23 +274,6 @@ export class Game extends Scene {
     if (this.archivePanel) {
       this.archivePanel.setDepth(10);
     }
-
-    const debugFps = new URLSearchParams(window.location.search).get('debugFps') === '1';
-    if (debugFps) {
-      this.fpsText = this.add.text(8, 8, 'FPS: --', {
-        fontFamily: 'monospace',
-        fontSize: '10px',
-        color: '#00ff88',
-        backgroundColor: '#00000088',
-        padding: { x: 4, y: 2 },
-      }).setDepth(100).setScrollFactor(0);
-    }
-
-    this.drawAtmosphere();
-    this.drawGrid();
-    this.drawFrame();
-    this.drawDockRail();
-    this.updateToolDock();
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown);
     this.input.on('pointerdown', this.handlePointerDown);
@@ -304,7 +298,77 @@ export class Game extends Scene {
     window.addEventListener('online', this.handleOnline);
     window.addEventListener('offline', this.handleOffline);
 
+    this.resizeHandler = (gameSize: Phaser.Structs.Size) => {
+      this.refreshLayout(gameSize.width, gameSize.height);
+    };
+    this.scale.on('resize', this.resizeHandler);
+
     void this.loadInitialSnapshot();
+  }
+
+  private refreshLayout(width: number, height: number): void {
+    if (!this.simulation || !this.background) {
+      return;
+    }
+
+    this.cameras.resize(width, height);
+
+    this.background.setSize(width, height);
+
+    this.hudMargin = Math.round(Math.max(100, 130 * Math.min(width / 1920, height / 1080)));
+    this.dockMargin = Math.round(Math.max(90, 132 * Math.min(width / 1920, height / 1080)));
+    this.scaleFactor = Math.max(0.25, Math.min(width / 1920, (height - this.dockMargin) / 1080));
+
+    const sf = this.scaleFactor;
+    const baseSf = Math.min(width / 1920, height / 1080);
+    const minFont = (base: number) => Math.round(Math.max(10, base * baseSf));
+
+    this.titleText.setPosition(Math.round(32 * sf), Math.round(26 * sf));
+    this.titleText.setFontSize(minFont(40));
+    this.subtitleText.setPosition(Math.round(34 * sf), this.titleText.y + this.titleText.height + Math.round(6 * sf));
+    this.subtitleText.setFontSize(minFont(16));
+    this.statusText.setPosition(Math.round(34 * sf), this.subtitleText.y + Math.round(6 * sf));
+    this.statusText.setFontSize(minFont(18));
+
+    this.scoreText.setPosition(width - Math.round(240 * sf), Math.round(28 * sf));
+    this.scoreText.setFontSize(minFont(22));
+    this.timerText.setPosition(width - Math.round(240 * sf), this.scoreText.y + Math.round(30 * sf));
+    this.timerText.setFontSize(minFont(18));
+    this.nodeQuotaText.setPosition(width - Math.round(240 * sf), this.timerText.y + Math.round(30 * sf));
+    this.nodeQuotaText.setFontSize(minFont(18));
+
+    this.connectivityIndicator.setPosition(Math.round(8 * sf), Math.round(8 * sf));
+    this.connectivityIndicator.setFontSize(minFont(10));
+    this.syncSpinner.setFontSize(minFont(14));
+    if (this.fpsText) {
+      this.fpsText.setPosition(Math.round(8 * sf), Math.round(8 * sf));
+      this.fpsText.setFontSize(minFont(10));
+    }
+
+    if (this.archiveButton) {
+      this.archiveButton.setPosition(width - Math.round(120 * sf), Math.round(90 * sf));
+      this.archiveButton.setFontSize(minFont(14));
+    }
+    this.positionArchivePanel();
+
+    this.drawAtmosphere(width, height);
+    this.drawGrid(width, height);
+    this.drawFrame(width, height);
+    this.drawDockRail(width, height);
+    this.updateToolDock();
+
+    const virtualPlayfieldW = VIRTUAL_FIELD_WIDTH;
+    const virtualPlayfieldH = VIRTUAL_FIELD_HEIGHT - this.hudMargin / sf - this.dockMargin / sf;
+    const playfieldScale = Math.min(width / virtualPlayfieldW, (height - this.hudMargin - this.dockMargin) / virtualPlayfieldH);
+    const playfieldW = Math.round(virtualPlayfieldW * playfieldScale);
+    const playfieldH = Math.round(virtualPlayfieldH * playfieldScale);
+
+    this.simulation.setViewport(
+      Math.round((width - playfieldW) / 2),
+      this.hudMargin + Math.round(((height - this.hudMargin - this.dockMargin) - playfieldH) / 2),
+      playfieldW,
+      playfieldH,
+    );
   }
 
   private createToolDock(): Record<NodeType, ToolUi> {
@@ -347,6 +411,19 @@ export class Game extends Scene {
     return { badge, detail, icon, panel, selectHitArea, title };
   }
 
+  private createfpsText(): void {
+    const debugFps = new URLSearchParams(window.location.search).get('debugFps') === '1';
+    if (debugFps) {
+      this.fpsText = this.add.text(0, 0, 'FPS: --', {
+        fontFamily: 'monospace',
+        fontSize: '10px',
+        color: '#00ff88',
+        backgroundColor: '#00000088',
+        padding: { x: 4, y: 2 },
+      }).setDepth(100).setScrollFactor(0);
+    }
+  }
+
   private handleShutdown = () => {
     this.throughputTimer?.remove(false);
     this.pollTimer?.remove(false);
@@ -355,6 +432,10 @@ export class Game extends Scene {
     this.simulation.destroy();
     window.removeEventListener('online', this.handleOnline);
     window.removeEventListener('offline', this.handleOffline);
+    if (this.resizeHandler) {
+      this.scale.off('resize', this.resizeHandler);
+      this.resizeHandler = null;
+    }
     this.throughputRetryQueue = [];
     this.deployQueue = [];
     this.deployInFlight = false;
@@ -399,10 +480,10 @@ export class Game extends Scene {
   private handlePointerDown = (pointer: Phaser.Input.Pointer) => {
     if (this.isArchiveOpen) {
       if (!this.archivePanel || !this.archivePanelBg) return;
-      const panelX = 960;
-      const panelY = 540;
-      const halfW = 200;
-      const halfH = 150;
+      const panelX = this.scale.width / 2;
+      const panelY = this.scale.height / 2;
+      const halfW = Math.round(Math.min(200 * this.scaleFactor, this.scale.width * 0.45));
+      const halfH = Math.round(Math.min(150 * this.scaleFactor, this.scale.height * 0.35));
       if (pointer.x < panelX - halfW || pointer.x > panelX + halfW ||
           pointer.y < panelY - halfH || pointer.y > panelY + halfH) {
         this.closeArchive();
@@ -418,13 +499,15 @@ export class Game extends Scene {
       return;
     }
 
-    const logicalX = (pointer.x * LOGICAL_FIELD_WIDTH) / VIRTUAL_FIELD_WIDTH;
-    const logicalY = (pointer.y * LOGICAL_FIELD_HEIGHT) / VIRTUAL_FIELD_HEIGHT;
+    const viewport = this.simulation.getViewport();
+    const virtualX = ((pointer.x - viewport.x) / viewport.w) * VIRTUAL_FIELD_WIDTH;
+    const virtualY = ((pointer.y - viewport.y) / viewport.h) * VIRTUAL_FIELD_HEIGHT;
+    const logical = canonicalToLogical(virtualX, virtualY);
 
     this.deployQueue.push({
       type: this.selectedTool,
-      x: logicalX,
-      y: logicalY,
+      x: logical.x,
+      y: logical.y,
     });
     this.updatePendingDeployIndicator();
     void this.processDeployQueue();
@@ -690,13 +773,14 @@ export class Game extends Scene {
   }
 
   private showResetOverlay(archivedScore: number) {
+    const sf = this.scaleFactor;
     const overlayText = this.add.text(
-      960,
-      540,
+      this.scale.width / 2,
+      this.scale.height / 2,
       `Day archived — Score: ${archivedScore}`,
       {
         fontFamily: 'monospace',
-        fontSize: '24px',
+        fontSize: `${Math.round(Math.max(14, 24 * sf))}px`,
         color: '#00f0ff',
         stroke: '#00151a',
         strokeThickness: 4,
@@ -811,20 +895,35 @@ export class Game extends Scene {
 
   private updateToolDock() {
     const activeTool = this.snapshot?.selectedTool ?? this.selectedTool;
+    const sf = this.scaleFactor;
+    const { width, height } = this.scale;
+    const dockY = height - Math.round(104 * sf);
 
     TOOL_CARDS.forEach((card, index) => {
       const ui = this.toolUi[card.key];
       const isActive = card.key === activeTool;
       const isRejected = card.key === this.rejectedTool;
-      const x = (index - 1) * 200;
+      const x = (index - 1) * Math.round(200 * sf);
 
-      ui.panel.setPosition(960 + x, 976);
+      ui.panel.setPosition(width / 2 + x, dockY);
+      ui.badge.setSize(Math.round(168 * sf), Math.round(118 * sf));
+      ui.badge.setPosition(0, 0);
+      const cardSf = Math.max(0.35, Math.min(1, sf * 1.8));
+      ui.title.setScale(cardSf);
+      ui.title.setPosition(Math.round(-72 * cardSf), Math.round(-36 * cardSf));
+      ui.detail.setScale(cardSf);
+      ui.detail.setPosition(Math.round(-72 * cardSf), Math.round(-4 * cardSf));
+      ui.detail.setWordWrapWidth(Math.round(148 * cardSf));
+      const zoneW = Math.round(168 * sf);
+      const zoneH = Math.round(118 * sf);
+      ui.selectHitArea.setSize(zoneW, zoneH);
+      ui.selectHitArea.setPosition(0, 0);
       ui.badge.setFillStyle(
         isRejected ? 0xff0055 : card.accent,
         isRejected ? 0.22 : isActive ? 0.1 : 0.12
       );
       ui.badge.setStrokeStyle(
-        isRejected ? 4 : isActive ? 3 : 1,
+        isRejected ? Math.round(4 * sf) : isActive ? Math.round(3 * sf) : 1,
         isRejected ? 0xff0055 : card.accent,
         isRejected || isActive ? 1 : 0.4
       );
@@ -833,26 +932,28 @@ export class Game extends Scene {
 
       ui.icon.clear();
       ui.icon.lineStyle(
-        isRejected ? 4 : isActive ? 3 : 2,
+        isRejected ? Math.round(4 * sf) : isActive ? Math.round(3 * sf) : 2,
         isRejected ? 0xff0055 : card.accent,
         1
       );
       ui.icon.fillStyle(isRejected ? 0xff0055 : card.accent, isActive ? 0.1 : 0.1);
 
+      const iconSf = Math.max(0.25, Math.min(1, sf * 1.5));
       if (card.key === NodeType.Attractor) {
         const radii: [number, number, number] = isActive ? [18, 28, 38] : [16, 26, 36];
-        ui.icon.strokeCircle(0, -8, radii[0]);
-        ui.icon.strokeCircle(0, -8, radii[1]);
-        ui.icon.strokeCircle(0, -8, radii[2]);
+        ui.icon.strokeCircle(0, Math.round(-8 * iconSf), radii[0] * iconSf);
+        ui.icon.strokeCircle(0, Math.round(-8 * iconSf), radii[1] * iconSf);
+        ui.icon.strokeCircle(0, Math.round(-8 * iconSf), radii[2] * iconSf);
       } else if (card.key === NodeType.Repeller) {
-        ui.icon.strokeTriangle(-22, 16, 0, -20, 22, 16);
-        ui.icon.fillTriangle(-22, 16, 0, -20, 22, 16);
+        const ts = iconSf;
+        ui.icon.strokeTriangle(Math.round(-22 * ts), Math.round(16 * ts), 0, Math.round(-20 * ts), Math.round(22 * ts), Math.round(16 * ts));
+        ui.icon.fillTriangle(Math.round(-22 * ts), Math.round(16 * ts), 0, Math.round(-20 * ts), Math.round(22 * ts), Math.round(16 * ts));
       } else {
         ui.icon.beginPath();
         ui.icon.arc(
           0,
-          -4,
-          isActive ? 25 : 21,
+          Math.round(-4 * iconSf),
+          (isActive ? 25 : 21) * iconSf,
           Phaser.Math.DegToRad(30),
           Phaser.Math.DegToRad(330),
           false
@@ -875,87 +976,97 @@ export class Game extends Scene {
     });
   }
 
-  private drawAtmosphere() {
+  private drawAtmosphere(width: number, height: number) {
     this.atmosphere.clear();
+    const sf = Math.min(width / 1920, height / 1080);
     this.atmosphere.fillStyle(0x00f0ff, 0.08);
     this.atmosphere.fillCircle(
-      345.6,
-      237.6,
-      237.6
+      Math.round(345.6 * sf),
+      Math.round(237.6 * sf),
+      Math.round(237.6 * sf)
     );
     this.atmosphere.fillStyle(0xff0055, 0.08);
     this.atmosphere.fillCircle(
-      1574.4,
-      194.4,
-      194.4
+      Math.round(1574.4 * sf),
+      Math.round(194.4 * sf),
+      Math.round(194.4 * sf)
     );
     this.atmosphere.fillStyle(0xffaa00, 0.08);
     this.atmosphere.fillCircle(
-      1075.2,
-      885.6,
-      216
+      Math.round(1075.2 * sf),
+      Math.round(885.6 * sf),
+      Math.round(216 * sf)
     );
   }
 
-  private drawGrid() {
+  private drawGrid(width: number, height: number) {
     this.grid.clear();
     this.grid.lineStyle(1, 0x1a2a36, 0.4);
-    const step = 64;
+    const sf = Math.min(width / 1920, height / 1080);
+    const step = Math.max(8, Math.round(64 * sf));
 
-    for (let x = 0; x <= 1920; x += step) {
-      this.grid.lineBetween(x, 0, x, 1080);
+    for (let x = 0; x <= width; x += step) {
+      this.grid.lineBetween(x, 0, x, height);
     }
 
-    for (let y = 0; y <= 1080; y += step) {
-      this.grid.lineBetween(0, y, 1920, y);
+    for (let y = 0; y <= height; y += step) {
+      this.grid.lineBetween(0, y, width, y);
     }
   }
 
-  private drawFrame() {
+  private drawFrame(width: number, height: number) {
     this.playfieldFrame.clear();
+    const sf = Math.min(width / 1920, height / 1080);
+    const margin = Math.round(18 * sf);
+    const dockRoom = Math.round(132 * sf);
     this.playfieldFrame.lineStyle(2, 0x00f0ff, 0.45);
     this.playfieldFrame.strokeRoundedRect(
-      18,
-      18,
-      1920 - 36,
-      1080 - 132 - 18,
-      24
+      margin,
+      margin,
+      width - margin * 2,
+      height - dockRoom - margin,
+      Math.round(24 * sf)
     );
     this.playfieldFrame.lineStyle(1, 0xff0055, 0.28);
+    const innerMargin = Math.round(28 * sf);
     this.playfieldFrame.strokeRoundedRect(
-      28,
-      28,
-      1920 - 56,
-      1080 - 122 - 28,
-      18
+      innerMargin,
+      innerMargin,
+      width - innerMargin * 2,
+      height - dockRoom - innerMargin + Math.round(10 * sf),
+      Math.round(18 * sf)
     );
   }
 
-  private drawDockRail() {
+  private drawDockRail(width: number, height: number) {
     this.dockRail.clear();
+    const sf = Math.min(width / 1920, height / 1080);
+    const dockHeight = Math.round(108 * sf);
+    const dockBottom = Math.round(132 * sf);
+    const dockY = height - dockBottom;
     this.dockRail.fillStyle(0x0b1019, 0.88);
     this.dockRail.fillRoundedRect(
-      24,
-      1080 - 132,
-      1920 - 48,
-      108,
-      27
+      Math.round(24 * sf),
+      dockY,
+      width - Math.round(48 * sf),
+      dockHeight,
+      Math.round(27 * sf)
     );
     this.dockRail.lineStyle(1, 0x00f0ff, 0.5);
     this.dockRail.strokeRoundedRect(
-      24,
-      1080 - 132,
-      1920 - 48,
-      108,
-      27
+      Math.round(24 * sf),
+      dockY,
+      width - Math.round(48 * sf),
+      dockHeight,
+      Math.round(27 * sf)
     );
     this.dockRail.lineStyle(1, 0xff0055, 0.18);
     this.dockRail.strokeRoundedRect(
-      34,
-      1080 - 122,
-      1920 - 68,
-      88,
-      18
+      Math.round(34 * sf),
+      dockY + Math.round(10 * sf),
+      width - Math.round(68 * sf),
+      Math.round(88 * sf),
+      Math.round(18 * sf)
     );
   }
 
@@ -1089,7 +1200,7 @@ export class Game extends Scene {
 
   private positionArchivePanel() {
     if (!this.archivePanel) return;
-    this.archivePanel.setPosition(960, 540);
+    this.archivePanel.setPosition(this.scale.width / 2, this.scale.height / 2);
   }
 
   private toggleArchive() {
@@ -1335,7 +1446,7 @@ export class Game extends Scene {
   private updateSyncSpinner() {
     if (this.throughputRetryQueue.length > 0) {
       this.syncSpinner.setText(UI_TEXT.retrying);
-      this.syncSpinner.setPosition(1860, 30);
+      this.syncSpinner.setPosition(this.scale.width - Math.round(60 * this.scaleFactor), Math.round(30 * this.scaleFactor));
       this.syncSpinner.setVisible(true);
     } else {
       this.syncSpinner.setVisible(false);
@@ -1393,8 +1504,8 @@ export class Game extends Scene {
     const ui = this.toolUi[tool];
     this.pendingDeployIndicator.setText(`${UI_TEXT.pending} ${count}`);
     this.pendingDeployIndicator.setPosition(
-      ui.panel.x + 60,
-      ui.panel.y - 118 / 2 - 14
+      ui.panel.x + Math.round(60 * this.scaleFactor),
+      ui.panel.y - Math.round(118 / 2 * this.scaleFactor) - Math.round(14 * this.scaleFactor)
     );
     this.pendingDeployIndicator.setVisible(true);
   }

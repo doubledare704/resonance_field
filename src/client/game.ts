@@ -12,10 +12,8 @@ const config: Phaser.Types.Core.GameConfig = {
   backgroundColor: '#0d0e15',
   banner: false,
   scale: {
-    mode: Phaser.Scale.FIT,
+    mode: Phaser.Scale.RESIZE,
     autoCenter: Phaser.Scale.CENTER_BOTH,
-    width: 1920,
-    height: 1080,
   },
   scene: [Boot, Preloader, MainMenu, MainGame, GameOver],
 };

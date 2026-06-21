@@ -4,6 +4,7 @@ export class MainMenu extends Scene {
   background: GameObjects.Image | null = null;
   logo: GameObjects.Image | null = null;
   title: GameObjects.Text | null = null;
+  private resizeHandler: (() => void) | null = null;
 
   constructor() {
     super('MainMenu');
@@ -24,12 +25,22 @@ export class MainMenu extends Scene {
     this.refreshLayout();
 
     // Re-calculate positions whenever the game canvas is resized (e.g. orientation change).
-    this.scale.on('resize', () => this.refreshLayout());
+    this.resizeHandler = () => this.refreshLayout();
+    this.scale.on('resize', this.resizeHandler);
+
+    this.events.once('shutdown', this.handleShutdown);
 
     this.input.once('pointerdown', () => {
       this.scene.start('Game');
     });
   }
+
+  private handleShutdown = () => {
+    if (this.resizeHandler) {
+      this.scale.off('resize', this.resizeHandler);
+      this.resizeHandler = null;
+    }
+  };
 
   /**
    * Positions and (lightly) scales all UI elements based on the current game size.
@@ -45,7 +56,9 @@ export class MainMenu extends Scene {
     if (!this.background) {
       this.background = this.add.image(0, 0, 'background').setOrigin(0);
     }
-    this.background!.setDisplaySize(width, height);
+    if (this.background) {
+      this.background.setDisplaySize(width, height);
+    }
 
     // Logo – keep aspect but scale down for very small screens
     const scaleFactor = Math.min(width / 1024, height / 768);
@@ -53,7 +66,9 @@ export class MainMenu extends Scene {
     if (!this.logo) {
       this.logo = this.add.image(0, 0, 'logo');
     }
-    this.logo!.setPosition(width / 2, height * 0.38).setScale(scaleFactor);
+    if (this.logo) {
+      this.logo.setPosition(width / 2, height * 0.38).setScale(scaleFactor);
+    }
 
     // Title text – create once, then scale on resize
     const baseFontSize = 38;
@@ -69,7 +84,9 @@ export class MainMenu extends Scene {
         })
         .setOrigin(0.5);
     }
-    this.title!.setPosition(width / 2, height * 0.6);
-    this.title!.setScale(scaleFactor);
+    if (this.title) {
+      this.title.setPosition(width / 2, height * 0.6);
+      this.title.setScale(scaleFactor);
+    }
   }
 }

@@ -60,6 +60,12 @@ export class ParticleField {
   private canonicalLayout: CanonicalLayout | null = null;
   private layoutVersion = -1;
   private drawnLayoutVersion = -1;
+  private viewportX = 0;
+  private viewportY = 0;
+  private viewportW = VIRTUAL_WIDTH;
+  private viewportH = VIRTUAL_HEIGHT;
+  private vpScale = 1;
+  private viewportLayout: CanonicalLayout | null = null;
 
   constructor(
     scene: Phaser.Scene,
@@ -128,7 +134,61 @@ export class ParticleField {
         sink: logicalCircleToCanonical(layout.sink),
         spawnBand: logicalRectToCanonical(layout.spawnBand),
       };
+      this.rebuildViewportLayout();
     }
+  }
+
+  setViewport(x: number, y: number, w: number, h: number): void {
+    this.viewportX = x;
+    this.viewportY = y;
+    this.viewportW = w;
+    this.viewportH = h;
+    this.vpScale = w / VIRTUAL_WIDTH;
+    this.rebuildViewportLayout();
+  }
+
+  getViewport(): { x: number; y: number; w: number; h: number } {
+    return { x: this.viewportX, y: this.viewportY, w: this.viewportW, h: this.viewportH };
+  }
+
+  private rebuildViewportLayout(): void {
+    if (!this.canonicalLayout) {
+      this.viewportLayout = null;
+      return;
+    }
+    const s = this.vpScale;
+    const ox = this.viewportX;
+    const oy = this.viewportY;
+    this.viewportLayout = {
+      bounds: {
+        x: Math.round(this.canonicalLayout.bounds.x * s + ox),
+        y: Math.round(this.canonicalLayout.bounds.y * s + oy),
+        w: Math.round(this.canonicalLayout.bounds.w * s),
+        h: Math.round(this.canonicalLayout.bounds.h * s),
+      },
+      obstacles: this.canonicalLayout.obstacles.map((o) => ({
+        x: Math.round(o.x * s + ox),
+        y: Math.round(o.y * s + oy),
+        w: Math.round(o.w * s),
+        h: Math.round(o.h * s),
+      })),
+      hazards: this.canonicalLayout.hazards.map((h) => ({
+        x: Math.round(h.x * s + ox),
+        y: Math.round(h.y * s + oy),
+        r: Math.round(h.r * s),
+      })),
+      sink: {
+        x: Math.round(this.canonicalLayout.sink.x * s + ox),
+        y: Math.round(this.canonicalLayout.sink.y * s + oy),
+        r: Math.round(this.canonicalLayout.sink.r * s),
+      },
+      spawnBand: {
+        x: Math.round(this.canonicalLayout.spawnBand.x * s + ox),
+        y: Math.round(this.canonicalLayout.spawnBand.y * s + oy),
+        w: Math.round(this.canonicalLayout.spawnBand.w * s),
+        h: Math.round(this.canonicalLayout.spawnBand.h * s),
+      },
+    };
   }
 
   step(delta: number, nodes: readonly GameNode[]) {
@@ -148,25 +208,29 @@ export class ParticleField {
 
     const canonicalNodes: CanonicalNode[] = activeNodes.map((node) => {
       const c = logicalToCanonical(node.x, node.y);
-      return { type: node.type, x: c.x, y: c.y };
+      return {
+        type: node.type,
+        x: c.x * this.vpScale + this.viewportX,
+        y: c.y * this.vpScale + this.viewportY,
+      };
     });
 
     this.emitter.forEachAlive((particle): void => {
       let ax = 0;
-      let ay = BASE_GRAVITY;
+      let ay = BASE_GRAVITY * this.vpScale;
 
       for (const node of canonicalNodes) {
         const dx = node.x - particle.x;
         const dy = node.y - particle.y;
         const distSq = dx * dx + dy * dy;
-        const captureRadiusSq = CAPTURE_RADIUS * CAPTURE_RADIUS;
+        const captureRadiusSq = CAPTURE_RADIUS * CAPTURE_RADIUS * this.vpScale * this.vpScale;
 
         if (distSq <= 36 || distSq >= captureRadiusSq) {
           continue;
         }
 
         const distance = Math.sqrt(distSq);
-        const forceFactor = ((CAPTURE_RADIUS - distance) / CAPTURE_RADIUS) * dt;
+        const forceFactor = ((CAPTURE_RADIUS * this.vpScale - distance) / (CAPTURE_RADIUS * this.vpScale)) * dt;
 
         if (node.type === NodeType.Attractor) {
           ax += (dx / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Attractor];
@@ -186,9 +250,10 @@ export class ParticleField {
       const currentSpeed = Math.sqrt(
         particle.velocityX * particle.velocityX + particle.velocityY * particle.velocityY
       );
-      if (currentSpeed > MAX_SPEED) {
-        particle.velocityX = (particle.velocityX / currentSpeed) * MAX_SPEED;
-        particle.velocityY = (particle.velocityY / currentSpeed) * MAX_SPEED;
+      const maxSpeed = MAX_SPEED * this.vpScale;
+      if (currentSpeed > maxSpeed) {
+        particle.velocityX = (particle.velocityX / currentSpeed) * maxSpeed;
+        particle.velocityY = (particle.velocityY / currentSpeed) * maxSpeed;
       }
 
       particle.x += particle.velocityX * dt;
@@ -196,8 +261,8 @@ export class ParticleField {
 
       const clampedSpeed = currentSpeed;
 
-      if (this.canonicalLayout) {
-        const layout = this.canonicalLayout;
+      if (this.viewportLayout) {
+        const layout = this.viewportLayout;
 
         for (const obstacle of layout.obstacles) {
           if (
@@ -261,25 +326,30 @@ export class ParticleField {
           return;
         }
 
+        const vpX = this.viewportX;
+        const vpY = this.viewportY;
+        const vpW = this.viewportW;
+        const vpH = this.viewportH;
+
         if (
-          particle.x < -24 ||
-          particle.x > VIRTUAL_WIDTH + 24 ||
-          particle.y > VIRTUAL_HEIGHT + 24
+          particle.x < vpX - 24 ||
+          particle.x > vpX + vpW + 24 ||
+          particle.y > vpY + vpH + 24
         ) {
           this.respawnParticle(particle);
           return;
         }
 
-        if (particle.y < -24) {
-          particle.y = -24;
+        if (particle.y < vpY - 24) {
+          particle.y = vpY - 24;
           particle.velocityY = Math.abs(particle.velocityY);
         }
 
-        if (particle.x < 24) {
-          particle.x = 24;
+        if (particle.x < vpX + 24) {
+          particle.x = vpX + 24;
           particle.velocityX = Math.abs(particle.velocityX);
-        } else if (particle.x > VIRTUAL_WIDTH - 24) {
-          particle.x = VIRTUAL_WIDTH - 24;
+        } else if (particle.x > vpX + vpW - 24) {
+          particle.x = vpX + vpW - 24;
           particle.velocityX = -Math.abs(particle.velocityX);
         }
       }
@@ -305,16 +375,20 @@ export class ParticleField {
   }
 
   private spawnCoords(initial = false) {
-    const layout = this.canonicalLayout;
+    const layout = this.viewportLayout ?? this.canonicalLayout;
+    const vpW = this.viewportW;
+    const vpH = this.viewportH;
+    const vpX = this.viewportX;
+    const vpY = this.viewportY;
     const spawnBandY = layout
       ? layout.spawnBand.y + layout.spawnBand.h * 0.5
-      : VIRTUAL_HEIGHT * 0.15;
+      : vpY + vpH * 0.15;
     const startY = initial
-      ? Phaser.Math.Between(-Math.round(spawnBandY), Math.round(VIRTUAL_HEIGHT * 0.5))
-      : Phaser.Math.Between(-60, 10);
+      ? Phaser.Math.Between(-Math.round(spawnBandY), Math.round(vpY + vpH * 0.5))
+      : Phaser.Math.Between(-60, 10) + vpY;
 
     return {
-      x: Phaser.Math.Between(24, Math.max(25, VIRTUAL_WIDTH - 24)),
+      x: Phaser.Math.Between(Math.max(vpX + 24, vpX), Math.max(vpX + 25, vpX + vpW - 24)),
       y: startY,
     };
   }
@@ -326,10 +400,11 @@ export class ParticleField {
     const spawn = this.spawnCoords(!asBurst);
     particle.x = spawn.x;
     particle.y = spawn.y;
-    particle.velocityX = Phaser.Math.FloatBetween(-0.45, 0.45);
+    const baseV = this.vpScale;
+    particle.velocityX = Phaser.Math.FloatBetween(-0.45 * baseV, 0.45 * baseV);
     particle.velocityY = asBurst
-      ? Phaser.Math.FloatBetween(0.7, 1.6)
-      : Phaser.Math.FloatBetween(0.35, 0.9);
+      ? Phaser.Math.FloatBetween(0.7 * baseV, 1.6 * baseV)
+      : Phaser.Math.FloatBetween(0.35 * baseV, 0.9 * baseV);
     particle.lifeCurrent = particle.life;
     particle.scaleX = 0.6;
     particle.scaleY = 0.6;
@@ -348,9 +423,9 @@ export class ParticleField {
   }
 
   private isCollectedFallback(particle: Phaser.GameObjects.Particles.Particle) {
-    const sinkX = VIRTUAL_WIDTH / 2;
-    const sinkY = VIRTUAL_HEIGHT * 0.81;
-    const sinkR = Math.min(VIRTUAL_WIDTH, VIRTUAL_HEIGHT) * 0.075;
+    const sinkX = this.viewportX + this.viewportW / 2;
+    const sinkY = this.viewportY + this.viewportH * 0.81;
+    const sinkR = Math.min(this.viewportW, this.viewportH) * 0.075;
     if (particle.y < sinkY - sinkR * 0.4) {
       return false;
     }
@@ -360,24 +435,24 @@ export class ParticleField {
   }
 
   private drawFieldLayout() {
-    if (!this.canonicalLayout) return;
+    if (!this.viewportLayout) return;
 
     this.fieldGraphics.clear();
 
-    for (const obstacle of this.canonicalLayout.obstacles) {
+    for (const obstacle of this.viewportLayout.obstacles) {
       this.fieldGraphics.lineStyle(2, 0x00f0ff, 0.7);
       this.fieldGraphics.fillStyle(0x0d0e15, 0.9);
       this.fieldGraphics.fillRect(obstacle.x, obstacle.y, obstacle.w, obstacle.h);
       this.fieldGraphics.strokeRect(obstacle.x, obstacle.y, obstacle.w, obstacle.h);
     }
 
-    for (const hazard of this.canonicalLayout.hazards) {
+    for (const hazard of this.viewportLayout.hazards) {
       const pulse = 0.5 + Math.sin(this.sinkPulse * 2) * 0.3;
       this.fieldGraphics.lineStyle(2, 0xff0055, 0.6 * pulse);
       this.fieldGraphics.strokeCircle(hazard.x, hazard.y, hazard.r * (1 + pulse * 0.2));
     }
 
-    this.drawSink(this.canonicalLayout.sink);
+    this.drawSink(this.viewportLayout.sink);
   }
 
   private drawSink(sink: { x: number; y: number; r: number }) {
@@ -396,29 +471,41 @@ export class ParticleField {
 
   private drawNodes(nodes: readonly GameNode[]) {
     this.nodeGraphics.clear();
+    const s = this.vpScale;
+    const ox = this.viewportX;
+    const oy = this.viewportY;
 
     for (const node of nodes) {
       const c = logicalToCanonical(node.x, node.y);
-      const screenX = c.x;
-      const screenY = c.y;
+      const screenX = c.x * s + ox;
+      const screenY = c.y * s + oy;
       const accent = NODE_ACCENTS[node.type];
+      const nodeScale = Math.max(0.4, s * 0.5);
       if (node.type === NodeType.Attractor) {
         this.nodeGraphics.lineStyle(3, accent, 0.9);
-        this.nodeGraphics.strokeCircle(screenX, screenY, 18);
-        this.nodeGraphics.strokeCircle(screenX, screenY, 28);
-        this.nodeGraphics.strokeCircle(screenX, screenY, 38);
+        this.nodeGraphics.strokeCircle(screenX, screenY, 18 * nodeScale);
+        this.nodeGraphics.strokeCircle(screenX, screenY, 28 * nodeScale);
+        this.nodeGraphics.strokeCircle(screenX, screenY, 38 * nodeScale);
       } else if (node.type === NodeType.Repeller) {
         this.nodeGraphics.lineStyle(3, accent, 0.95);
         this.nodeGraphics.fillStyle(accent, 0.18);
-        this.nodeGraphics.fillTriangle(screenX - 22, screenY + 16, screenX, screenY - 20, screenX + 22, screenY + 16);
-        this.nodeGraphics.strokeTriangle(screenX - 22, screenY + 16, screenX, screenY - 20, screenX + 22, screenY + 16);
+        this.nodeGraphics.fillTriangle(
+          screenX - 22 * nodeScale, screenY + 16 * nodeScale,
+          screenX, screenY - 20 * nodeScale,
+          screenX + 22 * nodeScale, screenY + 16 * nodeScale,
+        );
+        this.nodeGraphics.strokeTriangle(
+          screenX - 22 * nodeScale, screenY + 16 * nodeScale,
+          screenX, screenY - 20 * nodeScale,
+          screenX + 22 * nodeScale, screenY + 16 * nodeScale,
+        );
       } else {
         this.nodeGraphics.lineStyle(3, accent, 0.95);
         this.nodeGraphics.beginPath();
-        this.nodeGraphics.arc(screenX, screenY, 24, Phaser.Math.DegToRad(30), Phaser.Math.DegToRad(330), false);
+        this.nodeGraphics.arc(screenX, screenY, 24 * nodeScale, Phaser.Math.DegToRad(30), Phaser.Math.DegToRad(330), false);
         this.nodeGraphics.strokePath();
         this.nodeGraphics.lineStyle(1, accent, 0.45);
-        this.nodeGraphics.strokeCircle(screenX, screenY, 12);
+        this.nodeGraphics.strokeCircle(screenX, screenY, 12 * nodeScale);
       }
     }
   }
