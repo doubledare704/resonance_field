@@ -12,8 +12,8 @@ import {
 describe('logicalToCanonical', () => {
   it('converts logical center to canonical center', () => {
     const result = logicalToCanonical(400, 300);
-    expect(result.x).toBe(960);
-    expect(result.y).toBe(540);
+    expect(result.x).toBe(400);
+    expect(result.y).toBe(300);
   });
 
   it('converts logical origin to canonical origin', () => {
@@ -24,14 +24,14 @@ describe('logicalToCanonical', () => {
 
   it('converts logical max to canonical max', () => {
     const result = logicalToCanonical(800, 600);
-    expect(result.x).toBe(1920);
-    expect(result.y).toBe(1080);
+    expect(result.x).toBe(800);
+    expect(result.y).toBe(600);
   });
 });
 
 describe('canonicalToLogical', () => {
   it('converts canonical center to logical center', () => {
-    const result = canonicalToLogical(960, 540);
+    const result = canonicalToLogical(400, 300);
     expect(result.x).toBe(400);
     expect(result.y).toBe(300);
   });
@@ -43,7 +43,7 @@ describe('canonicalToLogical', () => {
   });
 
   it('converts canonical max to logical max', () => {
-    const result = canonicalToLogical(1920, 1080);
+    const result = canonicalToLogical(800, 600);
     expect(result.x).toBe(800);
     expect(result.y).toBe(600);
   });

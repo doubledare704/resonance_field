@@ -188,16 +188,16 @@ import { ParticleField } from '../simulation';
 function makeToolUi() {
   const base = {
     panel: { x: 0, y: 0, setPosition: () => {}, add: () => {} },
-    badge: { setFillStyle: () => {}, setStrokeStyle: () => {} },
-    title: { setColor: () => {} },
-    detail: { setColor: () => {} },
+    badge: { setFillStyle: () => {}, setStrokeStyle: () => {}, setSize: () => {}, setPosition: () => {} },
+    title: { setColor: () => {}, setScale: () => {}, setVisible: () => {}, setFontSize: () => {}, setPosition: () => {} },
+    detail: { setColor: () => {}, setScale: () => {}, setVisible: () => {}, setFontSize: () => {}, setPosition: () => {}, setWordWrapWidth: () => {} },
     icon: { clear: () => {}, lineStyle: () => {}, fillStyle: () => {}, strokeCircle: () => {}, strokeTriangle: () => {}, fillTriangle: () => {}, beginPath: () => {}, arc: () => {}, strokePath: () => {} },
-    selectHitArea: {} as { on?: (...args: unknown[]) => unknown },
+    selectHitArea: { setSize: () => {}, setPosition: () => {} } as { on?: (...args: unknown[]) => unknown; setSize?: () => void; setPosition?: () => void },
   };
   return {
-    [NodeType.Attractor]: { ...base, selectHitArea: {} },
-    [NodeType.Repeller]: { ...base, selectHitArea: {} },
-    [NodeType.Vortex]: { ...base, selectHitArea: {} },
+    [NodeType.Attractor]: { ...base, selectHitArea: { ...base.selectHitArea } },
+    [NodeType.Repeller]: { ...base, selectHitArea: { ...base.selectHitArea } },
+    [NodeType.Vortex]: { ...base, selectHitArea: { ...base.selectHitArea } },
   };
 }
 

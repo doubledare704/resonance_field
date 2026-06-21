@@ -17,8 +17,8 @@ import {
   ScoreUpdateReason,
 } from '../../shared/api';
 import {
-  VIRTUAL_FIELD_WIDTH,
-  VIRTUAL_FIELD_HEIGHT,
+  LOGICAL_FIELD_HEIGHT,
+  LOGICAL_FIELD_WIDTH,
   canonicalToLogical,
 } from '../../shared/field-layout';
 import type {
@@ -50,6 +50,25 @@ type ToolUi = {
   icon: Phaser.GameObjects.Graphics;
   selectHitArea: Phaser.GameObjects.Zone;
 };
+
+type DockTier = 'mobile' | 'desktop' | 'fullscreen';
+
+type DockLayout = {
+  tier: DockTier;
+  dockHeight: number;
+  cardW: number;
+  cardH: number;
+  spacing: number;
+  iconScale: number;
+  iconCenterY: number;
+  titleCenterY: number;
+  detailCenterY: number;
+  titleFontSize: string;
+  detailFontSize: string;
+  titleVisible: boolean;
+  detailVisible: boolean;
+};
+
 const POLL_INTERVAL_MS = 30_000; // Relaxed — realtime channel handles live sync
 const CONNECTIVITY_FAILURE_THRESHOLD = 3;
 
@@ -119,9 +138,10 @@ export class Game extends Scene {
   simulation!: ParticleField;
   snapshot: GameSnapshot | null = null;
   localPendingScore = 0;
-  private scaleFactor = 1;
-  private hudMargin = 0;
-  private dockMargin = 0;
+  private uiScale = 1;
+  private playfieldScale = 1;
+  private hudHeight = 0;
+  private dockHeight = 0;
   private throughputTimer?: Phaser.Time.TimerEvent;
   private pollTimer?: Phaser.Time.TimerEvent;
   private rejectionResetTimer: Phaser.Time.TimerEvent | null = null;
@@ -216,13 +236,17 @@ export class Game extends Scene {
       color: '#ff5b86',
     });
 
-    this.archiveButton = this.add.text(0, 0, 'ARCHIVE', {
+    this.scoreText.setOrigin(1, 0);
+    this.timerText.setOrigin(1, 0);
+    this.nodeQuotaText.setOrigin(1, 0);
+
+    this.archiveButton = this.add.text(0, 0, 'ARCHIVE [H]', {
       fontFamily: 'monospace',
       fontSize: '14px',
       color: '#00f0ff',
       backgroundColor: '#101420',
       padding: { x: 8, y: 4 },
-    }).setInteractive({ useHandCursor: true }).setOrigin(0.5, 0);
+    }).setInteractive({ useHandCursor: true }).setOrigin(1, 0);
     this.archiveButton.on('pointerdown', () => this.toggleArchive());
 
     this.connectivityIndicator = this.add.text(0, 0, '', {
@@ -315,60 +339,132 @@ export class Game extends Scene {
 
     this.background.setSize(width, height);
 
-    this.hudMargin = Math.round(Math.max(100, 130 * Math.min(width / 1920, height / 1080)));
-    this.dockMargin = Math.round(Math.max(90, 132 * Math.min(width / 1920, height / 1080)));
-    this.scaleFactor = Math.max(0.25, Math.min(width / 1920, (height - this.dockMargin) / 1080));
+    // Raw scale factor based on the 800x600 logical layout target.
+    const rawScale = Math.min(width / LOGICAL_FIELD_WIDTH, height / LOGICAL_FIELD_HEIGHT);
+    // Clamp the UI scale so text and buttons remain readable on small mobile
+    // screens without becoming overwhelming on large desktop displays.
+    this.uiScale = Math.min(Math.max(rawScale, 0.6), 1.6);
 
-    const sf = this.scaleFactor;
-    const baseSf = Math.min(width / 1920, height / 1080);
-    const minFont = (base: number) => Math.round(Math.max(10, base * baseSf));
+    // Reserve fixed-height HUD and dock areas that scale with the UI. The dock
+    // uses a tiered layout (mobile/desktop/fullscreen) so its height grows to
+    // accommodate tool names and descriptions on larger screens.
+    this.hudHeight = Math.round(72 * this.uiScale);
+    this.dockHeight = this.getDockLayout(width, height).dockHeight;
 
-    this.titleText.setPosition(Math.round(32 * sf), Math.round(26 * sf));
-    this.titleText.setFontSize(minFont(40));
-    this.subtitleText.setPosition(Math.round(34 * sf), this.titleText.y + this.titleText.height + Math.round(6 * sf));
-    this.subtitleText.setFontSize(minFont(16));
-    this.statusText.setPosition(Math.round(34 * sf), this.subtitleText.y + Math.round(6 * sf));
-    this.statusText.setFontSize(minFont(18));
+    const availableHeight = Math.max(200, height - this.hudHeight - this.dockHeight);
+    this.playfieldScale = Math.min(width / LOGICAL_FIELD_WIDTH, availableHeight / LOGICAL_FIELD_HEIGHT);
 
-    this.scoreText.setPosition(width - Math.round(240 * sf), Math.round(28 * sf));
-    this.scoreText.setFontSize(minFont(22));
-    this.timerText.setPosition(width - Math.round(240 * sf), this.scoreText.y + Math.round(30 * sf));
-    this.timerText.setFontSize(minFont(18));
-    this.nodeQuotaText.setPosition(width - Math.round(240 * sf), this.timerText.y + Math.round(30 * sf));
-    this.nodeQuotaText.setFontSize(minFont(18));
+    const leftX = Math.round(16 * this.uiScale);
+    const topY = Math.round(16 * this.uiScale);
+    const rightX = width - Math.round(16 * this.uiScale);
 
-    this.connectivityIndicator.setPosition(Math.round(8 * sf), Math.round(8 * sf));
-    this.connectivityIndicator.setFontSize(minFont(10));
-    this.syncSpinner.setFontSize(minFont(14));
+    this.titleText.setPosition(leftX, topY);
+    this.titleText.setFontSize(this.uiFontSize(28));
+    this.subtitleText.setPosition(leftX, this.titleText.y + this.titleText.height + Math.round(4 * this.uiScale));
+    this.subtitleText.setFontSize(this.uiFontSize(12));
+    this.statusText.setPosition(leftX, this.subtitleText.y + this.subtitleText.height + Math.round(4 * this.uiScale));
+    this.statusText.setFontSize(this.uiFontSize(14));
+
+    this.scoreText.setPosition(rightX, topY);
+    this.scoreText.setFontSize(this.uiFontSize(22));
+    this.timerText.setPosition(rightX, this.scoreText.y + this.scoreText.height + Math.round(4 * this.uiScale));
+    this.timerText.setFontSize(this.uiFontSize(16));
+    this.nodeQuotaText.setPosition(rightX, this.timerText.y + this.timerText.height + Math.round(4 * this.uiScale));
+    this.nodeQuotaText.setFontSize(this.uiFontSize(14));
+
+    this.connectivityIndicator.setPosition(leftX, topY);
+    this.connectivityIndicator.setFontSize(this.uiFontSize(10));
+    this.syncSpinner.setFontSize(this.uiFontSize(14));
     if (this.fpsText) {
-      this.fpsText.setPosition(Math.round(8 * sf), Math.round(8 * sf));
-      this.fpsText.setFontSize(minFont(10));
+      this.fpsText.setPosition(leftX, topY + Math.round(12 * this.uiScale));
+      this.fpsText.setFontSize(this.uiFontSize(10));
     }
 
     if (this.archiveButton) {
-      this.archiveButton.setPosition(width - Math.round(120 * sf), Math.round(90 * sf));
-      this.archiveButton.setFontSize(minFont(14));
+      this.archiveButton.setPosition(rightX, this.nodeQuotaText.y + this.nodeQuotaText.height + Math.round(8 * this.uiScale));
+      this.archiveButton.setFontSize(this.uiFontSize(12));
     }
     this.positionArchivePanel();
 
+    // Center the 800x600 logical playfield in the remaining area between the
+    // HUD and the dock, preserving its aspect ratio.
+    const playfieldW = Math.round(LOGICAL_FIELD_WIDTH * this.playfieldScale);
+    const playfieldH = Math.round(LOGICAL_FIELD_HEIGHT * this.playfieldScale);
+    const playfieldX = Math.round((width - playfieldW) / 2);
+    const playfieldY = Math.round(this.hudHeight + (availableHeight - playfieldH) / 2);
+
+    this.simulation.setViewport(playfieldX, playfieldY, playfieldW, playfieldH);
+
     this.drawAtmosphere(width, height);
     this.drawGrid(width, height);
-    this.drawFrame(width, height);
+    this.drawFrame();
     this.drawDockRail(width, height);
     this.updateToolDock();
+  }
 
-    const virtualPlayfieldW = VIRTUAL_FIELD_WIDTH;
-    const virtualPlayfieldH = VIRTUAL_FIELD_HEIGHT - this.hudMargin / sf - this.dockMargin / sf;
-    const playfieldScale = Math.min(width / virtualPlayfieldW, (height - this.hudMargin - this.dockMargin) / virtualPlayfieldH);
-    const playfieldW = Math.round(virtualPlayfieldW * playfieldScale);
-    const playfieldH = Math.round(virtualPlayfieldH * playfieldScale);
+  private uiFontSize(base: number): string {
+    const size = Math.round(Math.max(10, base * this.uiScale));
+    return `${size}px`;
+  }
 
-    this.simulation.setViewport(
-      Math.round((width - playfieldW) / 2),
-      this.hudMargin + Math.round(((height - this.hudMargin - this.dockMargin) - playfieldH) / 2),
-      playfieldW,
-      playfieldH,
+  private getDockTier(width: number, height: number): DockTier {
+    if (width < 640 || height < 520) {
+      return 'mobile';
+    }
+    if (width >= 1280 && height >= 800) {
+      return 'fullscreen';
+    }
+    return 'desktop';
+  }
+
+  private getDockLayout(width: number, height: number): DockLayout {
+    const sf = this.uiScale;
+    const tier = this.getDockTier(width, height);
+
+    const dockHeightBase = tier === 'mobile' ? 140 : tier === 'desktop' ? 150 : 190;
+    const dockHeight = Math.round(dockHeightBase * sf);
+    const cardMargin = Math.round(16 * sf);
+    const cardH = Math.max(Math.round(64 * sf), dockHeight - cardMargin * 2);
+
+    let cardW: number;
+    let spacing: number;
+    if (tier === 'mobile') {
+      cardW = cardH;
+      spacing = cardW + Math.round(12 * sf);
+    } else if (tier === 'desktop') {
+      cardW = Math.round(110 * sf);
+      spacing = cardW + Math.round(24 * sf);
+    } else {
+      cardW = Math.round(150 * sf);
+      spacing = cardW + Math.round(40 * sf);
+    }
+
+    const iconScale = Math.max(
+      0.5,
+      Math.min(tier === 'mobile' ? 1.2 : 1.0, cardW / (tier === 'mobile' ? 90 : 140)),
     );
+    const iconCenterY = tier === 'mobile' ? 0 : -Math.round(cardH / 3);
+    const titleCenterY = tier === 'desktop' ? Math.round(cardH / 6) : -Math.round(cardH / 12);
+    const detailCenterY = Math.round(cardH / 3);
+
+    const titleFontSize = tier === 'fullscreen' ? this.uiFontSize(20) : this.uiFontSize(16);
+    const detailFontSize = this.uiFontSize(12);
+
+    return {
+      tier,
+      dockHeight,
+      cardW,
+      cardH,
+      spacing,
+      iconScale,
+      iconCenterY,
+      titleCenterY,
+      detailCenterY,
+      titleFontSize,
+      detailFontSize,
+      titleVisible: tier !== 'mobile',
+      detailVisible: tier === 'fullscreen',
+    };
   }
 
   private createToolDock(): Record<NodeType, ToolUi> {
@@ -390,13 +486,14 @@ export class Game extends Scene {
       fontFamily: 'Arial Black',
       fontSize: '18px',
       color: '#f6ffff',
-    });
+    }).setOrigin(0.5);
     const detail = this.add.text(-72, -4, card.description, {
       fontFamily: 'monospace',
       fontSize: '12px',
       color: '#9cb7c4',
       wordWrap: { width: 148 },
-    });
+      align: 'center',
+    }).setOrigin(0.5);
     const icon = this.add.graphics();
     const selectHitArea = this.add.zone(0, 0, 168, 118).setOrigin(0.5).setInteractive({
       useHandCursor: true,
@@ -482,8 +579,8 @@ export class Game extends Scene {
       if (!this.archivePanel || !this.archivePanelBg) return;
       const panelX = this.scale.width / 2;
       const panelY = this.scale.height / 2;
-      const halfW = Math.round(Math.min(200 * this.scaleFactor, this.scale.width * 0.45));
-      const halfH = Math.round(Math.min(150 * this.scaleFactor, this.scale.height * 0.35));
+      const halfW = Math.round(Math.min(200 * this.uiScale, this.scale.width * 0.45));
+      const halfH = Math.round(Math.min(150 * this.uiScale, this.scale.height * 0.35));
       if (pointer.x < panelX - halfW || pointer.x > panelX + halfW ||
           pointer.y < panelY - halfH || pointer.y > panelY + halfH) {
         this.closeArchive();
@@ -500,9 +597,9 @@ export class Game extends Scene {
     }
 
     const viewport = this.simulation.getViewport();
-    const virtualX = ((pointer.x - viewport.x) / viewport.w) * VIRTUAL_FIELD_WIDTH;
-    const virtualY = ((pointer.y - viewport.y) / viewport.h) * VIRTUAL_FIELD_HEIGHT;
-    const logical = canonicalToLogical(virtualX, virtualY);
+    const logicalX = ((pointer.x - viewport.x) / viewport.w) * LOGICAL_FIELD_WIDTH;
+    const logicalY = ((pointer.y - viewport.y) / viewport.h) * LOGICAL_FIELD_HEIGHT;
+    const logical = canonicalToLogical(logicalX, logicalY);
 
     this.deployQueue.push({
       type: this.selectedTool,
@@ -773,7 +870,7 @@ export class Game extends Scene {
   }
 
   private showResetOverlay(archivedScore: number) {
-    const sf = this.scaleFactor;
+    const sf = this.uiScale;
     const overlayText = this.add.text(
       this.scale.width / 2,
       this.scale.height / 2,
@@ -895,28 +992,30 @@ export class Game extends Scene {
 
   private updateToolDock() {
     const activeTool = this.snapshot?.selectedTool ?? this.selectedTool;
-    const sf = this.scaleFactor;
+    const sf = this.uiScale;
     const { width, height } = this.scale;
-    const dockY = height - Math.round(104 * sf);
+    const dockY = height - Math.round(this.dockHeight / 2);
+    const layout = this.getDockLayout(width, height);
 
     TOOL_CARDS.forEach((card, index) => {
       const ui = this.toolUi[card.key];
       const isActive = card.key === activeTool;
       const isRejected = card.key === this.rejectedTool;
-      const x = (index - 1) * Math.round(200 * sf);
+      const x = (index - 1) * layout.spacing;
 
       ui.panel.setPosition(width / 2 + x, dockY);
-      ui.badge.setSize(Math.round(168 * sf), Math.round(118 * sf));
+      ui.badge.setSize(layout.cardW, layout.cardH);
       ui.badge.setPosition(0, 0);
-      const cardSf = Math.max(0.35, Math.min(1, sf * 1.8));
-      ui.title.setScale(cardSf);
-      ui.title.setPosition(Math.round(-72 * cardSf), Math.round(-36 * cardSf));
-      ui.detail.setScale(cardSf);
-      ui.detail.setPosition(Math.round(-72 * cardSf), Math.round(-4 * cardSf));
-      ui.detail.setWordWrapWidth(Math.round(148 * cardSf));
-      const zoneW = Math.round(168 * sf);
-      const zoneH = Math.round(118 * sf);
-      ui.selectHitArea.setSize(zoneW, zoneH);
+      ui.title.setVisible(layout.titleVisible);
+      ui.title.setFontSize(layout.titleFontSize);
+      ui.title.setPosition(0, layout.titleCenterY);
+      ui.title.setColor(isActive ? '#ffffff' : '#d8e1e8');
+      ui.detail.setVisible(layout.detailVisible);
+      ui.detail.setFontSize(layout.detailFontSize);
+      ui.detail.setPosition(0, layout.detailCenterY);
+      ui.detail.setWordWrapWidth(Math.max(40, layout.cardW - Math.round(16 * sf)));
+      ui.detail.setColor(isActive ? '#f7fbff' : '#9cb7c4');
+      ui.selectHitArea.setSize(layout.cardW, layout.cardH);
       ui.selectHitArea.setPosition(0, 0);
       ui.badge.setFillStyle(
         isRejected ? 0xff0055 : card.accent,
@@ -927,8 +1026,10 @@ export class Game extends Scene {
         isRejected ? 0xff0055 : card.accent,
         isRejected || isActive ? 1 : 0.4
       );
-      ui.title.setColor(isActive ? '#ffffff' : '#d8e1e8');
-      ui.detail.setColor(isActive ? '#f7fbff' : '#9cb7c4');
+
+      const iconCy = layout.iconCenterY;
+      const iconScale = layout.iconScale;
+      const isMobile = layout.tier === 'mobile';
 
       ui.icon.clear();
       ui.icon.lineStyle(
@@ -938,22 +1039,37 @@ export class Game extends Scene {
       );
       ui.icon.fillStyle(isRejected ? 0xff0055 : card.accent, isActive ? 0.1 : 0.1);
 
-      const iconSf = Math.max(0.25, Math.min(1, sf * 1.5));
       if (card.key === NodeType.Attractor) {
         const radii: [number, number, number] = isActive ? [18, 28, 38] : [16, 26, 36];
-        ui.icon.strokeCircle(0, Math.round(-8 * iconSf), radii[0] * iconSf);
-        ui.icon.strokeCircle(0, Math.round(-8 * iconSf), radii[1] * iconSf);
-        ui.icon.strokeCircle(0, Math.round(-8 * iconSf), radii[2] * iconSf);
+        const y = iconCy + (isMobile ? 0 : Math.round(-8 * iconScale));
+        ui.icon.strokeCircle(0, y, radii[0] * iconScale);
+        ui.icon.strokeCircle(0, y, radii[1] * iconScale);
+        ui.icon.strokeCircle(0, y, radii[2] * iconScale);
       } else if (card.key === NodeType.Repeller) {
-        const ts = iconSf;
-        ui.icon.strokeTriangle(Math.round(-22 * ts), Math.round(16 * ts), 0, Math.round(-20 * ts), Math.round(22 * ts), Math.round(16 * ts));
-        ui.icon.fillTriangle(Math.round(-22 * ts), Math.round(16 * ts), 0, Math.round(-20 * ts), Math.round(22 * ts), Math.round(16 * ts));
+        const ts = iconScale;
+        const y = iconCy + (isMobile ? Math.round(2 * ts) : 0);
+        ui.icon.strokeTriangle(
+          Math.round(-22 * ts),
+          Math.round(16 * ts) + y,
+          0,
+          Math.round(-20 * ts) + y,
+          Math.round(22 * ts),
+          Math.round(16 * ts) + y
+        );
+        ui.icon.fillTriangle(
+          Math.round(-22 * ts),
+          Math.round(16 * ts) + y,
+          0,
+          Math.round(-20 * ts) + y,
+          Math.round(22 * ts),
+          Math.round(16 * ts) + y
+        );
       } else {
         ui.icon.beginPath();
         ui.icon.arc(
           0,
-          Math.round(-4 * iconSf),
-          (isActive ? 25 : 21) * iconSf,
+          iconCy + (isMobile ? 0 : Math.round(-4 * iconScale)),
+          (isActive ? 25 : 21) * iconScale,
           Phaser.Math.DegToRad(30),
           Phaser.Math.DegToRad(330),
           false
@@ -978,31 +1094,30 @@ export class Game extends Scene {
 
   private drawAtmosphere(width: number, height: number) {
     this.atmosphere.clear();
-    const sf = Math.min(width / 1920, height / 1080);
     this.atmosphere.fillStyle(0x00f0ff, 0.08);
     this.atmosphere.fillCircle(
-      Math.round(345.6 * sf),
-      Math.round(237.6 * sf),
-      Math.round(237.6 * sf)
+      Math.round(width * 0.18),
+      Math.round(height * 0.22),
+      Math.round(Math.min(width, height) * 0.22)
     );
     this.atmosphere.fillStyle(0xff0055, 0.08);
     this.atmosphere.fillCircle(
-      Math.round(1574.4 * sf),
-      Math.round(194.4 * sf),
-      Math.round(194.4 * sf)
+      Math.round(width * 0.82),
+      Math.round(height * 0.18),
+      Math.round(Math.min(width, height) * 0.18)
     );
     this.atmosphere.fillStyle(0xffaa00, 0.08);
     this.atmosphere.fillCircle(
-      Math.round(1075.2 * sf),
-      Math.round(885.6 * sf),
-      Math.round(216 * sf)
+      Math.round(width * 0.56),
+      Math.round(height * 0.82),
+      Math.round(Math.min(width, height) * 0.2)
     );
   }
 
   private drawGrid(width: number, height: number) {
     this.grid.clear();
     this.grid.lineStyle(1, 0x1a2a36, 0.4);
-    const sf = Math.min(width / 1920, height / 1080);
+    const sf = Math.min(width / LOGICAL_FIELD_WIDTH, height / LOGICAL_FIELD_HEIGHT);
     const step = Math.max(8, Math.round(64 * sf));
 
     for (let x = 0; x <= width; x += step) {
@@ -1014,59 +1129,49 @@ export class Game extends Scene {
     }
   }
 
-  private drawFrame(width: number, height: number) {
+  private drawFrame() {
     this.playfieldFrame.clear();
-    const sf = Math.min(width / 1920, height / 1080);
-    const margin = Math.round(18 * sf);
-    const dockRoom = Math.round(132 * sf);
+    const sf = this.uiScale;
+    const viewport = this.simulation.getViewport();
+    const margin = Math.round(2 * sf);
     this.playfieldFrame.lineStyle(2, 0x00f0ff, 0.45);
     this.playfieldFrame.strokeRoundedRect(
-      margin,
-      margin,
-      width - margin * 2,
-      height - dockRoom - margin,
-      Math.round(24 * sf)
+      viewport.x - margin,
+      viewport.y - margin,
+      viewport.w + margin * 2,
+      viewport.h + margin * 2,
+      Math.round(12 * sf)
     );
     this.playfieldFrame.lineStyle(1, 0xff0055, 0.28);
-    const innerMargin = Math.round(28 * sf);
+    const innerMargin = Math.round(8 * sf);
     this.playfieldFrame.strokeRoundedRect(
-      innerMargin,
-      innerMargin,
-      width - innerMargin * 2,
-      height - dockRoom - innerMargin + Math.round(10 * sf),
-      Math.round(18 * sf)
+      viewport.x + innerMargin,
+      viewport.y + innerMargin,
+      viewport.w - innerMargin * 2,
+      viewport.h - innerMargin * 2,
+      Math.round(8 * sf)
     );
   }
 
   private drawDockRail(width: number, height: number) {
     this.dockRail.clear();
-    const sf = Math.min(width / 1920, height / 1080);
-    const dockHeight = Math.round(108 * sf);
-    const dockBottom = Math.round(132 * sf);
-    const dockY = height - dockBottom;
+    const sf = this.uiScale;
+    const dockY = height - this.dockHeight;
+    const railHeight = this.dockHeight - Math.round(16 * sf);
+    const railX = Math.round(16 * sf);
+    const railW = width - railX * 2;
     this.dockRail.fillStyle(0x0b1019, 0.88);
-    this.dockRail.fillRoundedRect(
-      Math.round(24 * sf),
-      dockY,
-      width - Math.round(48 * sf),
-      dockHeight,
-      Math.round(27 * sf)
-    );
+    this.dockRail.fillRoundedRect(railX, dockY, railW, railHeight, Math.round(16 * sf));
     this.dockRail.lineStyle(1, 0x00f0ff, 0.5);
-    this.dockRail.strokeRoundedRect(
-      Math.round(24 * sf),
-      dockY,
-      width - Math.round(48 * sf),
-      dockHeight,
-      Math.round(27 * sf)
-    );
+    this.dockRail.strokeRoundedRect(railX, dockY, railW, railHeight, Math.round(16 * sf));
     this.dockRail.lineStyle(1, 0xff0055, 0.18);
+    const innerMargin = Math.round(10 * sf);
     this.dockRail.strokeRoundedRect(
-      Math.round(34 * sf),
-      dockY + Math.round(10 * sf),
-      width - Math.round(68 * sf),
-      Math.round(88 * sf),
-      Math.round(18 * sf)
+      railX + innerMargin,
+      dockY + innerMargin,
+      railW - innerMargin * 2,
+      railHeight - innerMargin * 2,
+      Math.round(10 * sf)
     );
   }
 
@@ -1201,6 +1306,7 @@ export class Game extends Scene {
   private positionArchivePanel() {
     if (!this.archivePanel) return;
     this.archivePanel.setPosition(this.scale.width / 2, this.scale.height / 2);
+    this.archivePanel.setScale(this.uiScale);
   }
 
   private toggleArchive() {
@@ -1446,7 +1552,7 @@ export class Game extends Scene {
   private updateSyncSpinner() {
     if (this.throughputRetryQueue.length > 0) {
       this.syncSpinner.setText(UI_TEXT.retrying);
-      this.syncSpinner.setPosition(this.scale.width - Math.round(60 * this.scaleFactor), Math.round(30 * this.scaleFactor));
+      this.syncSpinner.setPosition(this.scale.width - Math.round(60 * this.uiScale), Math.round(30 * this.uiScale));
       this.syncSpinner.setVisible(true);
     } else {
       this.syncSpinner.setVisible(false);
@@ -1502,10 +1608,11 @@ export class Game extends Scene {
     const count = this.deployQueue.length + (this.deployInFlight ? 1 : 0);
     const tool = this.currentDeployItem?.type ?? this.selectedTool;
     const ui = this.toolUi[tool];
+    const layout = this.getDockLayout(this.scale.width, this.scale.height);
     this.pendingDeployIndicator.setText(`${UI_TEXT.pending} ${count}`);
     this.pendingDeployIndicator.setPosition(
-      ui.panel.x + Math.round(60 * this.scaleFactor),
-      ui.panel.y - Math.round(118 / 2 * this.scaleFactor) - Math.round(14 * this.scaleFactor)
+      ui.panel.x + Math.round(60 * this.uiScale),
+      ui.panel.y - Math.round(layout.cardH / 2) - Math.round(14 * this.uiScale)
     );
     this.pendingDeployIndicator.setVisible(true);
   }

@@ -1,9 +1,16 @@
 import * as Phaser from 'phaser';
 import { NodeType } from '../shared/api';
 import type { FieldLayout, GameNode } from '../shared/api';
-import { logicalToCanonical } from '../shared/field-layout';
+import {
+  VIRTUAL_FIELD_HEIGHT,
+  VIRTUAL_FIELD_WIDTH,
+  logicalToCanonical,
+} from '../shared/field-layout';
 
-const CAPTURE_RADIUS = 384;
+const LEGACY_VIRTUAL_WIDTH = 1920;
+const PHYSICS_SCALE = VIRTUAL_FIELD_WIDTH / LEGACY_VIRTUAL_WIDTH;
+
+const CAPTURE_RADIUS = 384 * PHYSICS_SCALE;
 
 type CanonicalNode = {
   type: NodeType;
@@ -12,17 +19,21 @@ type CanonicalNode = {
 };
 
 const NODE_FORCE_SCALE: Record<NodeType, number> = {
-  [NodeType.Attractor]: 0.95,
-  [NodeType.Repeller]: 1.35,
-  [NodeType.Vortex]: 1.75,
+  [NodeType.Attractor]: 0.95 * PHYSICS_SCALE,
+  [NodeType.Repeller]: 1.35 * PHYSICS_SCALE,
+  [NodeType.Vortex]: 1.75 * PHYSICS_SCALE,
 };
 
 const PARTICLE_LIFETIME_MS = 1_800_000;
-const MAX_SPEED = 28.8;
-const BASE_GRAVITY = 0.216;
+const MAX_SPEED = 28.8 * PHYSICS_SCALE;
+const BASE_GRAVITY = 0.216 * PHYSICS_SCALE;
 
-const VIRTUAL_WIDTH = 1920;
-const VIRTUAL_HEIGHT = 1080;
+const VIRTUAL_WIDTH = VIRTUAL_FIELD_WIDTH;
+const VIRTUAL_HEIGHT = VIRTUAL_FIELD_HEIGHT;
+
+const INITIAL_VELOCITY_X = { min: -0.45 * PHYSICS_SCALE, max: 0.45 * PHYSICS_SCALE };
+const INITIAL_VELOCITY_Y = { min: 0.35 * PHYSICS_SCALE, max: 0.9 * PHYSICS_SCALE };
+const BURST_VELOCITY_Y = { min: 0.7 * PHYSICS_SCALE, max: 1.6 * PHYSICS_SCALE };
 
 const NODE_ACCENTS: Record<NodeType, number> = {
   [NodeType.Attractor]: 0x00f0ff,
@@ -145,6 +156,7 @@ export class ParticleField {
     this.viewportH = h;
     this.vpScale = w / VIRTUAL_WIDTH;
     this.rebuildViewportLayout();
+    this.drawFieldLayout();
   }
 
   getViewport(): { x: number; y: number; w: number; h: number } {
@@ -368,8 +380,15 @@ export class ParticleField {
       const spawn = this.spawnCoords(index > 0);
       const particle = this.emitter.emitParticleAt(spawn.x, spawn.y);
       if (particle) {
-        particle.velocityX = Phaser.Math.FloatBetween(-0.45, 0.45);
-        particle.velocityY = Phaser.Math.FloatBetween(0.35, 0.9);
+        const baseV = this.vpScale;
+        particle.velocityX = Phaser.Math.FloatBetween(
+          INITIAL_VELOCITY_X.min * baseV,
+          INITIAL_VELOCITY_X.max * baseV,
+        );
+        particle.velocityY = Phaser.Math.FloatBetween(
+          INITIAL_VELOCITY_Y.min * baseV,
+          INITIAL_VELOCITY_Y.max * baseV,
+        );
       }
     }
   }
@@ -401,10 +420,13 @@ export class ParticleField {
     particle.x = spawn.x;
     particle.y = spawn.y;
     const baseV = this.vpScale;
-    particle.velocityX = Phaser.Math.FloatBetween(-0.45 * baseV, 0.45 * baseV);
+    particle.velocityX = Phaser.Math.FloatBetween(
+      INITIAL_VELOCITY_X.min * baseV,
+      INITIAL_VELOCITY_X.max * baseV,
+    );
     particle.velocityY = asBurst
-      ? Phaser.Math.FloatBetween(0.7 * baseV, 1.6 * baseV)
-      : Phaser.Math.FloatBetween(0.35 * baseV, 0.9 * baseV);
+      ? Phaser.Math.FloatBetween(BURST_VELOCITY_Y.min * baseV, BURST_VELOCITY_Y.max * baseV)
+      : Phaser.Math.FloatBetween(INITIAL_VELOCITY_Y.min * baseV, INITIAL_VELOCITY_Y.max * baseV);
     particle.lifeCurrent = particle.life;
     particle.scaleX = 0.6;
     particle.scaleY = 0.6;
