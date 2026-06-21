@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
+  GamePhase,
   NodeType,
+  ResponseType,
   createEmptySnapshot,
 } from '../../shared/api';
 import type { GameSnapshot } from '../../shared/api';
@@ -10,13 +12,24 @@ const bridgeMocks = vi.hoisted(() => ({
   requestInitialSnapshot: vi.fn(),
   deployNodeRequest: vi.fn(),
   requestArchiveHistory: vi.fn(),
+  selectToolRequest: vi.fn(),
+  connectRealtime: vi.fn(),
 }));
 
 vi.mock('../bridge', () => ({
+  gameBridge: {
+    connectRealtime: bridgeMocks.connectRealtime,
+    deployNodeRequest: bridgeMocks.deployNodeRequest,
+    requestArchiveHistory: bridgeMocks.requestArchiveHistory,
+    requestInitialSnapshot: bridgeMocks.requestInitialSnapshot,
+    selectToolRequest: bridgeMocks.selectToolRequest,
+    submitThroughputRequest: bridgeMocks.submitThroughputRequest,
+  },
   submitThroughputRequest: bridgeMocks.submitThroughputRequest,
   requestInitialSnapshot: bridgeMocks.requestInitialSnapshot,
   deployNodeRequest: bridgeMocks.deployNodeRequest,
   requestArchiveHistory: bridgeMocks.requestArchiveHistory,
+  selectToolRequest: bridgeMocks.selectToolRequest,
 }));
 
 const phaserMocks = vi.hoisted(() => {
@@ -185,19 +198,12 @@ vi.mock('phaser', () => phaserMocks.phaserModule);
 import { Game } from '../scenes/Game';
 import { ParticleField } from '../simulation';
 
-function makeToolUi() {
-  const base = {
-    panel: { x: 0, y: 0, setPosition: () => {}, add: () => {} },
-    badge: { setFillStyle: () => {}, setStrokeStyle: () => {}, setSize: () => {}, setPosition: () => {} },
-    title: { setColor: () => {}, setScale: () => {}, setVisible: () => {}, setFontSize: () => {}, setPosition: () => {} },
-    detail: { setColor: () => {}, setScale: () => {}, setVisible: () => {}, setFontSize: () => {}, setPosition: () => {}, setWordWrapWidth: () => {} },
-    icon: { clear: () => {}, lineStyle: () => {}, fillStyle: () => {}, strokeCircle: () => {}, strokeTriangle: () => {}, fillTriangle: () => {}, beginPath: () => {}, arc: () => {}, strokePath: () => {} },
-    selectHitArea: { setSize: () => {}, setPosition: () => {} } as { on?: (...args: unknown[]) => unknown; setSize?: () => void; setPosition?: () => void },
-  };
+function makeToolDock() {
   return {
-    [NodeType.Attractor]: { ...base, selectHitArea: { ...base.selectHitArea } },
-    [NodeType.Repeller]: { ...base, selectHitArea: { ...base.selectHitArea } },
-    [NodeType.Vortex]: { ...base, selectHitArea: { ...base.selectHitArea } },
+    destroy: () => {},
+    getHitAreas: () => [],
+    getToolPanel: () => ({ x: 0, y: 0 }),
+    update: () => {},
   };
 }
 
@@ -208,7 +214,7 @@ function makeSnapshot(overrides: Partial<GameSnapshot> = {}): GameSnapshot {
     subredditName: 'test-sub',
     now: Date.now(),
   });
-  return { ...base, phase: 'active', ...overrides };
+  return { ...base, phase: GamePhase.Active, ...overrides };
 }
 
 function makeNode(overrides: Record<string, unknown> = {}) {
@@ -238,7 +244,7 @@ function setupGame() {
   game.timerText = { setText: () => {} };
   game.nodeQuotaText = { setText: () => {} };
   game.throughputTimer = null;
-  game.toolUi = makeToolUi();
+  game.toolDock = makeToolDock();
   game.rejectedTool = null;
   game.scale = { width: 800, height: 600, on: () => {} };
   game.events = { once: () => {}, on: () => {}, off: () => {}, emit: () => {} };
@@ -339,7 +345,7 @@ describe('Game batch flush', () => {
     bridgeMocks.submitThroughputRequest.mockResolvedValueOnce({
       ok: true,
       data: {
-        type: 'throughput_accepted',
+        type: ResponseType.ThroughputAccepted,
         contractVersion: 'resonance-field/v1',
         scoreDelta: 42,
         snapshot: game.snapshot,
@@ -358,7 +364,7 @@ describe('Game batch flush', () => {
 
     bridgeMocks.submitThroughputRequest.mockResolvedValueOnce({
       ok: false,
-      error: { type: 'error', contractVersion: 'resonance-field/v1', message: 'Network error' },
+      error: { type: ResponseType.Error, contractVersion: 'resonance-field/v1', message: 'Network error' },
     });
 
     await game.priv_flushThroughput();
@@ -407,7 +413,7 @@ describe('Game retry queue', () => {
     const retryPromise = new Promise<void>((resolve) => {
       bridgeMocks.submitThroughputRequest.mockResolvedValueOnce({
         ok: false,
-        error: { type: 'error', contractVersion: 'resonance-field/v1', message: 'Fail' },
+        error: { type: ResponseType.Error, contractVersion: 'resonance-field/v1', message: 'Fail' },
       });
       resolve();
     });
@@ -436,7 +442,7 @@ describe('Game retry queue', () => {
       bridgeMocks.submitThroughputRequest.mockResolvedValueOnce({
         ok: true,
         data: {
-          type: 'throughput_accepted',
+          type: ResponseType.ThroughputAccepted,
           contractVersion: 'resonance-field/v1',
           scoreDelta: 10,
           snapshot: game.snapshot,
@@ -464,7 +470,7 @@ describe('Game retry queue', () => {
     const retryPromise = new Promise<void>((resolve) => {
       bridgeMocks.submitThroughputRequest.mockResolvedValueOnce({
         ok: false,
-        error: { type: 'error', contractVersion: 'resonance-field/v1', message: 'Fail' },
+        error: { type: ResponseType.Error, contractVersion: 'resonance-field/v1', message: 'Fail' },
       });
       resolve();
     });
@@ -506,7 +512,7 @@ describe('Game retry queue', () => {
       bridgeMocks.submitThroughputRequest.mockResolvedValueOnce({
         ok: true,
         data: {
-          type: 'throughput_accepted',
+          type: ResponseType.ThroughputAccepted,
           contractVersion: 'resonance-field/v1',
           scoreDelta: 10,
           snapshot: game.snapshot!,

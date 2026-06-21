@@ -27,7 +27,7 @@ vi.mock('@devvit/web/server', () => ({
 }));
 
 import { api } from '../api';
-import { CONTRACT_VERSION, NodeType } from '../../../shared/api';
+import { CONTRACT_VERSION, NodeType, ResponseType } from '../../../shared/api';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -37,7 +37,7 @@ beforeEach(() => {
 describe('GET /api/init', () => {
   it('returns 200 with GameInitResponse on success', async () => {
     mocks.buildInitialResponse.mockResolvedValue({
-      type: 'snapshot',
+      type: ResponseType.Snapshot,
       contractVersion: CONTRACT_VERSION,
       snapshot: { postId: 'test-post-id', globalScore: 0 },
     });
@@ -118,7 +118,7 @@ describe('POST /api/node-deploy', () => {
 describe('POST /api/throughput', () => {
   it('returns 200 with ThroughputResponse on success', async () => {
     mocks.submitThroughput.mockResolvedValue({
-      type: 'throughput_accepted',
+      type: ResponseType.ThroughputAccepted,
       contractVersion: CONTRACT_VERSION,
       snapshot: { globalScore: 5 },
       scoreDelta: 5,
@@ -171,7 +171,7 @@ describe('POST /api/throughput', () => {
 describe('POST /api/reset', () => {
   it('returns 200 with ResetResponse on success', async () => {
     mocks.resetDailyState.mockResolvedValue({
-      type: 'reset_complete',
+      type: ResponseType.ResetComplete,
       contractVersion: CONTRACT_VERSION,
       snapshot: { globalScore: 0 },
       archivedScore: 250,

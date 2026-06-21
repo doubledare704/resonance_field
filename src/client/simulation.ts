@@ -1,44 +1,17 @@
 import * as Phaser from 'phaser';
 import { NodeType } from '../shared/api';
 import type { FieldLayout, GameNode } from '../shared/api';
+import { SIMULATION_CONFIG } from '../shared/simulation-config';
 import {
   VIRTUAL_FIELD_HEIGHT,
   VIRTUAL_FIELD_WIDTH,
   logicalToCanonical,
 } from '../shared/field-layout';
 
-const LEGACY_VIRTUAL_WIDTH = 1920;
-const PHYSICS_SCALE = VIRTUAL_FIELD_WIDTH / LEGACY_VIRTUAL_WIDTH;
-
-const CAPTURE_RADIUS = 384 * PHYSICS_SCALE;
-
 type CanonicalNode = {
   type: NodeType;
   x: number;
   y: number;
-};
-
-const NODE_FORCE_SCALE: Record<NodeType, number> = {
-  [NodeType.Attractor]: 0.95 * PHYSICS_SCALE,
-  [NodeType.Repeller]: 1.35 * PHYSICS_SCALE,
-  [NodeType.Vortex]: 1.75 * PHYSICS_SCALE,
-};
-
-const PARTICLE_LIFETIME_MS = 1_800_000;
-const MAX_SPEED = 28.8 * PHYSICS_SCALE;
-const BASE_GRAVITY = 0.216 * PHYSICS_SCALE;
-
-const VIRTUAL_WIDTH = VIRTUAL_FIELD_WIDTH;
-const VIRTUAL_HEIGHT = VIRTUAL_FIELD_HEIGHT;
-
-const INITIAL_VELOCITY_X = { min: -0.45 * PHYSICS_SCALE, max: 0.45 * PHYSICS_SCALE };
-const INITIAL_VELOCITY_Y = { min: 0.35 * PHYSICS_SCALE, max: 0.9 * PHYSICS_SCALE };
-const BURST_VELOCITY_Y = { min: 0.7 * PHYSICS_SCALE, max: 1.6 * PHYSICS_SCALE };
-
-const NODE_ACCENTS: Record<NodeType, number> = {
-  [NodeType.Attractor]: 0x00f0ff,
-  [NodeType.Repeller]: 0xff0055,
-  [NodeType.Vortex]: 0xffaa00,
 };
 
 type CanonicalLayout = {
@@ -73,8 +46,8 @@ export class ParticleField {
   private drawnLayoutVersion = -1;
   private viewportX = 0;
   private viewportY = 0;
-  private viewportW = VIRTUAL_WIDTH;
-  private viewportH = VIRTUAL_HEIGHT;
+  private viewportW = VIRTUAL_FIELD_WIDTH;
+  private viewportH = VIRTUAL_FIELD_HEIGHT;
   private vpScale = 1;
   private viewportLayout: CanonicalLayout | null = null;
 
@@ -91,7 +64,7 @@ export class ParticleField {
       frequency: -1,
       quantity: particleCount,
       maxParticles: particleCount,
-      lifespan: PARTICLE_LIFETIME_MS,
+      lifespan: SIMULATION_CONFIG.particleLifetimeMs,
       speed: 0,
       alpha: {
         onUpdate: (
@@ -100,11 +73,15 @@ export class ParticleField {
           t: number,
           _value: number,
         ) => {
-          const alpha = 0.25 + t * 0.6;
-          return Phaser.Math.Clamp(alpha, 0.25, 0.85);
+          const alpha = SIMULATION_CONFIG.alphaRange.min + t * 0.6;
+          return Phaser.Math.Clamp(
+            alpha,
+            SIMULATION_CONFIG.alphaRange.min,
+            SIMULATION_CONFIG.alphaRange.max,
+          );
         },
       },
-      tint: 0xe7ffff,
+      tint: SIMULATION_CONFIG.particleTint,
       emitting: true,
     });
     this.emitter.setDepth(4);
@@ -154,7 +131,7 @@ export class ParticleField {
     this.viewportY = y;
     this.viewportW = w;
     this.viewportH = h;
-    this.vpScale = w / VIRTUAL_WIDTH;
+    this.vpScale = w / VIRTUAL_FIELD_WIDTH;
     this.rebuildViewportLayout();
     this.drawFieldLayout();
   }
@@ -208,7 +185,7 @@ export class ParticleField {
     const dt = Math.max(0.5, delta / 16.6667);
     const activeNodes = nodes.filter((node) => node.expiresAt > now);
 
-    this.sinkPulse += delta * 0.004;
+    this.sinkPulse += delta * SIMULATION_CONFIG.sinkPulseRate;
 
     if (this.layout && this.drawnLayoutVersion !== this.layoutVersion) {
       this.drawFieldLayout();
@@ -216,9 +193,20 @@ export class ParticleField {
     }
     this.drawNodes(activeNodes);
 
-    let collected = 0;
+    const canonicalNodes = this.buildCanonicalNodes(activeNodes);
 
-    const canonicalNodes: CanonicalNode[] = activeNodes.map((node) => {
+    let collected = 0;
+    this.emitter.forEachAlive((particle) => {
+      if (this.integrateParticle(particle, canonicalNodes, dt)) {
+        collected += 1;
+      }
+    }, this);
+
+    return collected;
+  }
+
+  private buildCanonicalNodes(nodes: readonly GameNode[]): CanonicalNode[] {
+    return nodes.map((node) => {
       const c = logicalToCanonical(node.x, node.y);
       return {
         type: node.type,
@@ -226,153 +214,207 @@ export class ParticleField {
         y: c.y * this.vpScale + this.viewportY,
       };
     });
+  }
 
-    this.emitter.forEachAlive((particle): void => {
-      let ax = 0;
-      let ay = BASE_GRAVITY * this.vpScale;
+  private integrateParticle(
+    particle: Phaser.GameObjects.Particles.Particle,
+    canonicalNodes: CanonicalNode[],
+    dt: number,
+  ): boolean {
+    const { ax, ay } = this.computeForces(particle, canonicalNodes, dt);
+    particle.velocityX += ax * dt;
+    particle.velocityY += ay * dt;
 
-      for (const node of canonicalNodes) {
-        const dx = node.x - particle.x;
-        const dy = node.y - particle.y;
-        const distSq = dx * dx + dy * dy;
-        const captureRadiusSq = CAPTURE_RADIUS * CAPTURE_RADIUS * this.vpScale * this.vpScale;
+    const preCapSpeed = Math.sqrt(
+      particle.velocityX * particle.velocityX + particle.velocityY * particle.velocityY
+    );
+    this.capSpeed(particle);
 
-        if (distSq <= 36 || distSq >= captureRadiusSq) {
-          continue;
-        }
+    particle.x += particle.velocityX * dt;
+    particle.y += particle.velocityY * dt;
 
-        const distance = Math.sqrt(distSq);
-        const forceFactor = ((CAPTURE_RADIUS * this.vpScale - distance) / (CAPTURE_RADIUS * this.vpScale)) * dt;
+    const collision = this.handleWorldCollision(particle);
+    if (collision.respawned) {
+      return collision.collected;
+    }
 
-        if (node.type === NodeType.Attractor) {
-          ax += (dx / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Attractor];
-          ay += (dy / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Attractor];
-        } else if (node.type === NodeType.Repeller) {
-          ax -= (dx / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Repeller];
-          ay -= (dy / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Repeller];
-        } else {
-          ax += (-dy / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Vortex];
-          ay += (dx / distance) * forceFactor * NODE_FORCE_SCALE[NodeType.Vortex];
-        }
+    this.updateParticleScale(particle, preCapSpeed);
+    return false;
+  }
+
+  private computeForces(
+    particle: Phaser.GameObjects.Particles.Particle,
+    canonicalNodes: CanonicalNode[],
+    dt: number,
+  ): { ax: number; ay: number } {
+    let ax = 0;
+    let ay = SIMULATION_CONFIG.baseGravity * this.vpScale;
+
+    for (const node of canonicalNodes) {
+      const dx = node.x - particle.x;
+      const dy = node.y - particle.y;
+      const distSq = dx * dx + dy * dy;
+      const captureRadius = SIMULATION_CONFIG.captureRadius * this.vpScale;
+      const captureRadiusSq = captureRadius * captureRadius;
+
+      if (distSq <= 36 || distSq >= captureRadiusSq) {
+        continue;
       }
 
-      particle.velocityX += ax * dt;
-      particle.velocityY += ay * dt;
+      const distance = Math.sqrt(distSq);
+      const forceFactor = ((captureRadius - distance) / captureRadius) * dt;
 
-      const currentSpeed = Math.sqrt(
-        particle.velocityX * particle.velocityX + particle.velocityY * particle.velocityY
-      );
-      const maxSpeed = MAX_SPEED * this.vpScale;
-      if (currentSpeed > maxSpeed) {
-        particle.velocityX = (particle.velocityX / currentSpeed) * maxSpeed;
-        particle.velocityY = (particle.velocityY / currentSpeed) * maxSpeed;
-      }
-
-      particle.x += particle.velocityX * dt;
-      particle.y += particle.velocityY * dt;
-
-      const clampedSpeed = currentSpeed;
-
-      if (this.viewportLayout) {
-        const layout = this.viewportLayout;
-
-        for (const obstacle of layout.obstacles) {
-          if (
-            particle.x >= obstacle.x &&
-            particle.x <= obstacle.x + obstacle.w &&
-            particle.y >= obstacle.y &&
-            particle.y <= obstacle.y + obstacle.h
-          ) {
-            const distLeft = Math.abs(particle.x - obstacle.x);
-            const distRight = Math.abs(particle.x - (obstacle.x + obstacle.w));
-            const distTop = Math.abs(particle.y - obstacle.y);
-            const distBottom = Math.abs(particle.y - (obstacle.y + obstacle.h));
-            const minDist = Math.min(distLeft, distRight, distTop, distBottom);
-
-            if (minDist === distLeft) {
-              particle.x = obstacle.x - 1;
-              particle.velocityX = -Math.abs(particle.velocityX);
-            } else if (minDist === distRight) {
-              particle.x = obstacle.x + obstacle.w + 1;
-              particle.velocityX = Math.abs(particle.velocityX);
-            } else if (minDist === distTop) {
-              particle.y = obstacle.y - 1;
-              particle.velocityY = -Math.abs(particle.velocityY);
-            } else {
-              particle.y = obstacle.y + obstacle.h + 1;
-              particle.velocityY = Math.abs(particle.velocityY);
-            }
-          }
-        }
-
-        for (const hazard of layout.hazards) {
-          const dx = particle.x - hazard.x;
-          const dy = particle.y - hazard.y;
-          if (dx * dx + dy * dy <= hazard.r * hazard.r) {
-            this.respawnParticle(particle);
-            return;
-          }
-        }
-
-        if (this.isCollected(particle, layout)) {
-          collected += 1;
-          this.respawnParticle(particle, true);
-          return;
-        }
-
-        const bounds = layout.bounds;
-
-        if (
-          particle.x < bounds.x ||
-          particle.x > bounds.x + bounds.w ||
-          particle.y < bounds.y ||
-          particle.y > bounds.y + bounds.h
-        ) {
-          this.respawnParticle(particle);
-          return;
-        }
+      if (node.type === NodeType.Attractor) {
+        ax += (dx / distance) * forceFactor * SIMULATION_CONFIG.nodeForceScale[NodeType.Attractor];
+        ay += (dy / distance) * forceFactor * SIMULATION_CONFIG.nodeForceScale[NodeType.Attractor];
+      } else if (node.type === NodeType.Repeller) {
+        ax -= (dx / distance) * forceFactor * SIMULATION_CONFIG.nodeForceScale[NodeType.Repeller];
+        ay -= (dy / distance) * forceFactor * SIMULATION_CONFIG.nodeForceScale[NodeType.Repeller];
       } else {
-        if (this.isCollectedFallback(particle)) {
-          collected += 1;
-          this.respawnParticle(particle, true);
-          return;
-        }
-
-        const vpX = this.viewportX;
-        const vpY = this.viewportY;
-        const vpW = this.viewportW;
-        const vpH = this.viewportH;
-
-        if (
-          particle.x < vpX - 24 ||
-          particle.x > vpX + vpW + 24 ||
-          particle.y > vpY + vpH + 24
-        ) {
-          this.respawnParticle(particle);
-          return;
-        }
-
-        if (particle.y < vpY - 24) {
-          particle.y = vpY - 24;
-          particle.velocityY = Math.abs(particle.velocityY);
-        }
-
-        if (particle.x < vpX + 24) {
-          particle.x = vpX + 24;
-          particle.velocityX = Math.abs(particle.velocityX);
-        } else if (particle.x > vpX + vpW - 24) {
-          particle.x = vpX + vpW - 24;
-          particle.velocityX = -Math.abs(particle.velocityX);
-        }
+        ax += (-dy / distance) * forceFactor * SIMULATION_CONFIG.nodeForceScale[NodeType.Vortex];
+        ay += (dx / distance) * forceFactor * SIMULATION_CONFIG.nodeForceScale[NodeType.Vortex];
       }
+    }
 
-      const intensity = Phaser.Math.Clamp(clampedSpeed / MAX_SPEED, 0.2, 1);
-      const size = 0.6 + intensity * 1.2;
-      particle.scaleX = size;
-      particle.scaleY = size;
-    }, this);
+    return { ax, ay };
+  }
 
-    return collected;
+  private capSpeed(particle: Phaser.GameObjects.Particles.Particle) {
+    const maxSpeed = SIMULATION_CONFIG.maxSpeed * this.vpScale;
+    const currentSpeed = Math.sqrt(
+      particle.velocityX * particle.velocityX + particle.velocityY * particle.velocityY
+    );
+    if (currentSpeed > maxSpeed) {
+      particle.velocityX = (particle.velocityX / currentSpeed) * maxSpeed;
+      particle.velocityY = (particle.velocityY / currentSpeed) * maxSpeed;
+    }
+  }
+
+  private handleWorldCollision(
+    particle: Phaser.GameObjects.Particles.Particle,
+  ): { collected: boolean; respawned: boolean } {
+    if (this.viewportLayout) {
+      return this.handleLayoutCollision(particle, this.viewportLayout);
+    }
+    return this.handleFallbackCollision(particle);
+  }
+
+  private handleLayoutCollision(
+    particle: Phaser.GameObjects.Particles.Particle,
+    layout: CanonicalLayout,
+  ): { collected: boolean; respawned: boolean } {
+    for (const obstacle of layout.obstacles) {
+      this.resolveObstacleCollision(particle, obstacle);
+    }
+
+    for (const hazard of layout.hazards) {
+      const dx = particle.x - hazard.x;
+      const dy = particle.y - hazard.y;
+      if (dx * dx + dy * dy <= hazard.r * hazard.r) {
+        this.respawnParticle(particle);
+        return { collected: false, respawned: true };
+      }
+    }
+
+    if (this.isCollected(particle, layout)) {
+      this.respawnParticle(particle, true);
+      return { collected: true, respawned: true };
+    }
+
+    const bounds = layout.bounds;
+    if (
+      particle.x < bounds.x ||
+      particle.x > bounds.x + bounds.w ||
+      particle.y < bounds.y ||
+      particle.y > bounds.y + bounds.h
+    ) {
+      this.respawnParticle(particle);
+      return { collected: false, respawned: true };
+    }
+
+    return { collected: false, respawned: false };
+  }
+
+  private resolveObstacleCollision(
+    particle: Phaser.GameObjects.Particles.Particle,
+    obstacle: { x: number; y: number; w: number; h: number },
+  ) {
+    if (
+      particle.x < obstacle.x ||
+      particle.x > obstacle.x + obstacle.w ||
+      particle.y < obstacle.y ||
+      particle.y > obstacle.y + obstacle.h
+    ) {
+      return;
+    }
+
+    const distLeft = Math.abs(particle.x - obstacle.x);
+    const distRight = Math.abs(particle.x - (obstacle.x + obstacle.w));
+    const distTop = Math.abs(particle.y - obstacle.y);
+    const distBottom = Math.abs(particle.y - (obstacle.y + obstacle.h));
+    const minDist = Math.min(distLeft, distRight, distTop, distBottom);
+
+    if (minDist === distLeft) {
+      particle.x = obstacle.x - 1;
+      particle.velocityX = -Math.abs(particle.velocityX);
+    } else if (minDist === distRight) {
+      particle.x = obstacle.x + obstacle.w + 1;
+      particle.velocityX = Math.abs(particle.velocityX);
+    } else if (minDist === distTop) {
+      particle.y = obstacle.y - 1;
+      particle.velocityY = -Math.abs(particle.velocityY);
+    } else {
+      particle.y = obstacle.y + obstacle.h + 1;
+      particle.velocityY = Math.abs(particle.velocityY);
+    }
+  }
+
+  private handleFallbackCollision(
+    particle: Phaser.GameObjects.Particles.Particle,
+  ): { collected: boolean; respawned: boolean } {
+    if (this.isCollectedFallback(particle)) {
+      this.respawnParticle(particle, true);
+      return { collected: true, respawned: true };
+    }
+
+    const margin = SIMULATION_CONFIG.spawnMargin;
+    const vpX = this.viewportX;
+    const vpY = this.viewportY;
+    const vpW = this.viewportW;
+    const vpH = this.viewportH;
+
+    if (
+      particle.x < vpX - margin ||
+      particle.x > vpX + vpW + margin ||
+      particle.y > vpY + vpH + margin
+    ) {
+      this.respawnParticle(particle);
+      return { collected: false, respawned: true };
+    }
+
+    if (particle.y < vpY - margin) {
+      particle.y = vpY - margin;
+      particle.velocityY = Math.abs(particle.velocityY);
+    }
+
+    if (particle.x < vpX + margin) {
+      particle.x = vpX + margin;
+      particle.velocityX = Math.abs(particle.velocityX);
+    } else if (particle.x > vpX + vpW - margin) {
+      particle.x = vpX + vpW - margin;
+      particle.velocityX = -Math.abs(particle.velocityX);
+    }
+
+    return { collected: false, respawned: false };
+  }
+
+  private updateParticleScale(particle: Phaser.GameObjects.Particles.Particle, speed: number) {
+    const intensity = Phaser.Math.Clamp(speed / SIMULATION_CONFIG.maxSpeed, 0.2, 1);
+    const size =
+      SIMULATION_CONFIG.scaleRange.min +
+      intensity * (SIMULATION_CONFIG.scaleRange.max - SIMULATION_CONFIG.scaleRange.min);
+    particle.scaleX = size;
+    particle.scaleY = size;
   }
 
   private seedParticles(count: number) {
@@ -382,12 +424,12 @@ export class ParticleField {
       if (particle) {
         const baseV = this.vpScale;
         particle.velocityX = Phaser.Math.FloatBetween(
-          INITIAL_VELOCITY_X.min * baseV,
-          INITIAL_VELOCITY_X.max * baseV,
+          SIMULATION_CONFIG.initialVelocityX.min * baseV,
+          SIMULATION_CONFIG.initialVelocityX.max * baseV,
         );
         particle.velocityY = Phaser.Math.FloatBetween(
-          INITIAL_VELOCITY_Y.min * baseV,
-          INITIAL_VELOCITY_Y.max * baseV,
+          SIMULATION_CONFIG.initialVelocityY.min * baseV,
+          SIMULATION_CONFIG.initialVelocityY.max * baseV,
         );
       }
     }
@@ -406,8 +448,9 @@ export class ParticleField {
       ? Phaser.Math.Between(-Math.round(spawnBandY), Math.round(vpY + vpH * 0.5))
       : Phaser.Math.Between(-60, 10) + vpY;
 
+    const margin = SIMULATION_CONFIG.spawnMargin;
     return {
-      x: Phaser.Math.Between(Math.max(vpX + 24, vpX), Math.max(vpX + 25, vpX + vpW - 24)),
+      x: Phaser.Math.Between(Math.max(vpX + margin, vpX), Math.max(vpX + margin + 1, vpX + vpW - margin)),
       y: startY,
     };
   }
@@ -421,15 +464,21 @@ export class ParticleField {
     particle.y = spawn.y;
     const baseV = this.vpScale;
     particle.velocityX = Phaser.Math.FloatBetween(
-      INITIAL_VELOCITY_X.min * baseV,
-      INITIAL_VELOCITY_X.max * baseV,
+      SIMULATION_CONFIG.initialVelocityX.min * baseV,
+      SIMULATION_CONFIG.initialVelocityX.max * baseV,
     );
     particle.velocityY = asBurst
-      ? Phaser.Math.FloatBetween(BURST_VELOCITY_Y.min * baseV, BURST_VELOCITY_Y.max * baseV)
-      : Phaser.Math.FloatBetween(INITIAL_VELOCITY_Y.min * baseV, INITIAL_VELOCITY_Y.max * baseV);
+      ? Phaser.Math.FloatBetween(
+          SIMULATION_CONFIG.burstVelocityY.min * baseV,
+          SIMULATION_CONFIG.burstVelocityY.max * baseV,
+        )
+      : Phaser.Math.FloatBetween(
+          SIMULATION_CONFIG.initialVelocityY.min * baseV,
+          SIMULATION_CONFIG.initialVelocityY.max * baseV,
+        );
     particle.lifeCurrent = particle.life;
-    particle.scaleX = 0.6;
-    particle.scaleY = 0.6;
+    particle.scaleX = SIMULATION_CONFIG.scaleRange.min;
+    particle.scaleY = SIMULATION_CONFIG.scaleRange.min;
   }
 
   private isCollected(particle: Phaser.GameObjects.Particles.Particle, layout: CanonicalLayout) {
@@ -501,7 +550,7 @@ export class ParticleField {
       const c = logicalToCanonical(node.x, node.y);
       const screenX = c.x * s + ox;
       const screenY = c.y * s + oy;
-      const accent = NODE_ACCENTS[node.type];
+      const accent = SIMULATION_CONFIG.nodeAccents[node.type];
       const nodeScale = Math.max(0.4, s * 0.5);
       if (node.type === NodeType.Attractor) {
         this.nodeGraphics.lineStyle(3, accent, 0.9);

@@ -32,6 +32,7 @@ vi.mock('@devvit/web/server', () => ({
 
 import {
   CONTRACT_VERSION,
+  GamePhase,
   NODE_LIFESPAN_MS,
   NodeType,
   NodeDeployRejectionReason,
@@ -78,7 +79,7 @@ const makeState = (overrides: Partial<GameState> = {}): GameState => {
     contractVersion: CONTRACT_VERSION,
     postId: 'test-post-id',
     subredditName: 'test-subreddit',
-    phase: 'idle',
+    phase: GamePhase.Idle,
     dailyResetAtUtc: now + 86_400_000,
     globalScore: 0,
     nodes: [],
@@ -149,12 +150,12 @@ describe('parseState', () => {
 
   it('parses valid state correctly', () => {
     const now = 1_700_500_000_000;
-    const state = makeState({ globalScore: 42, phase: 'active', nodes: [] });
+    const state = makeState({ globalScore: 42, phase: GamePhase.Active, nodes: [] });
     const json = JSON.stringify(state);
     const result = parseState(json, { ...BASE_SEED, now });
     expect(result.postId).toBe('test-post-id');
     expect(result.globalScore).toBe(42);
-    expect(result.phase).toBe('active');
+    expect(result.phase).toBe(GamePhase.Active);
   });
 
   it('filters out malformed node missing id', () => {
@@ -199,9 +200,9 @@ describe('parseState', () => {
   });
 
   it('sets phase to idle when invalid', () => {
-    const state = makeState({ phase: 'unknown' as 'active' });
+    const state = makeState({ phase: 'unknown' as GamePhase });
     const result = parseState(JSON.stringify(state), BASE_SEED);
-    expect(result.phase).toBe('idle');
+    expect(result.phase).toBe(GamePhase.Idle);
   });
 
   it('sets dailyResetAtUtc to next midnight when NaN', () => {

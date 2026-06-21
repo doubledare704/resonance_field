@@ -1,3 +1,5 @@
+import { connectRealtime } from '@devvit/web/client';
+import { ApiRoute } from '../shared/api';
 import type {
   ErrorResponse,
   GameInitResponse,
@@ -51,13 +53,13 @@ const requestJson = async <T>(
 };
 
 export const requestInitialSnapshot = async (): Promise<ApiResult<GameInitResponse>> => {
-  return requestJson<GameInitResponse>('/api/init');
+  return requestJson<GameInitResponse>(`/api${ApiRoute.Init}`);
 };
 
 export const deployNodeRequest = async (
   node: NodeDeployMessage['data']
 ): Promise<ApiResult<NodeDeployResponse>> => {
-  return requestJson<NodeDeployResponse>('/api/node-deploy', {
+  return requestJson<NodeDeployResponse>(`/api${ApiRoute.NodeDeploy}`, {
     body: JSON.stringify(node),
     method: 'POST',
   });
@@ -66,28 +68,46 @@ export const deployNodeRequest = async (
 export const submitThroughputRequest = async (
   count: SubmitThroughputMessage['data']['count']
 ): Promise<ApiResult<ThroughputResponse>> => {
-  return requestJson<ThroughputResponse>('/api/throughput', {
+  return requestJson<ThroughputResponse>(`/api${ApiRoute.Throughput}`, {
     body: JSON.stringify({ count }),
     method: 'POST',
   });
 };
 
 export const resetDailyStateRequest = async (): Promise<ApiResult<ResetResponse>> => {
-  return requestJson<ResetResponse>('/api/reset', {
+  return requestJson<ResetResponse>(`/api${ApiRoute.Reset}`, {
     method: 'POST',
   });
 };
 
 export const requestArchiveHistory = async (): Promise<ApiResult<HistoryResponse>> => {
-  return requestJson<HistoryResponse>('/api/history');
+  return requestJson<HistoryResponse>(`/api${ApiRoute.History}`);
 };
 
 export const selectToolRequest = async (
   tool: ToolSelectMessage['data']['tool']
 ): Promise<ApiResult<ToolSelectResponse>> => {
-  return requestJson<ToolSelectResponse>('/api/tool-select', {
+  return requestJson<ToolSelectResponse>(`/api${ApiRoute.ToolSelect}`, {
     body: JSON.stringify({ tool }),
     method: 'POST',
   });
 };
 
+
+export type GameBridge = {
+  deployNodeRequest: typeof deployNodeRequest;
+  requestArchiveHistory: typeof requestArchiveHistory;
+  requestInitialSnapshot: typeof requestInitialSnapshot;
+  selectToolRequest: typeof selectToolRequest;
+  submitThroughputRequest: typeof submitThroughputRequest;
+  connectRealtime: typeof connectRealtime;
+};
+
+export const gameBridge: GameBridge = {
+  connectRealtime,
+  deployNodeRequest,
+  requestArchiveHistory,
+  requestInitialSnapshot,
+  selectToolRequest,
+  submitThroughputRequest,
+};

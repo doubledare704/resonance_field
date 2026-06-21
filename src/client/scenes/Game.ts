@@ -1,28 +1,28 @@
 import { Scene, GameObjects } from 'phaser';
 import * as Phaser from 'phaser';
-import {
-  deployNodeRequest,
-  requestArchiveHistory,
-  requestInitialSnapshot,
-  selectToolRequest,
-  submitThroughputRequest,
-} from '../bridge';
-import { connectRealtime } from '@devvit/web/client';
+import { gameBridge, type GameBridge } from '../bridge';
 import { ParticleField } from '../simulation';
 import {
   BridgeMessageType,
-  NodeDeployRejectionReason,
   NodeRemovalReason,
   NodeType,
+  RealtimeEventType,
   ScoreUpdateReason,
 } from '../../shared/api';
+import { ToolDock } from '../tool-dock';
+import { ArchivePanel } from '../archive-panel';
 import {
   LOGICAL_FIELD_HEIGHT,
   LOGICAL_FIELD_WIDTH,
   canonicalToLogical,
 } from '../../shared/field-layout';
+import {
+  deriveDeployRejectionReason,
+  formatCountdown,
+  formatRelativeTime,
+  isRealtimeEvent,
+} from '../game-utils';
 import type {
-  ArchiveEntry,
   GameSnapshot,
   GlobalScoreUpdatedMessage,
   InitialSnapshotMessage,
@@ -35,63 +35,8 @@ import type {
   ThroughputResponse,
 } from '../../shared/api';
 
-type ToolCard = {
-  key: NodeType;
-  label: string;
-  accent: number;
-  description: string;
-};
-
-type ToolUi = {
-  panel: Phaser.GameObjects.Container;
-  badge: Phaser.GameObjects.Rectangle;
-  title: GameObjects.Text;
-  detail: GameObjects.Text;
-  icon: Phaser.GameObjects.Graphics;
-  selectHitArea: Phaser.GameObjects.Zone;
-};
-
-type DockTier = 'mobile' | 'desktop' | 'fullscreen';
-
-type DockLayout = {
-  tier: DockTier;
-  dockHeight: number;
-  cardW: number;
-  cardH: number;
-  spacing: number;
-  iconScale: number;
-  iconCenterY: number;
-  titleCenterY: number;
-  detailCenterY: number;
-  titleFontSize: string;
-  detailFontSize: string;
-  titleVisible: boolean;
-  detailVisible: boolean;
-};
-
 const POLL_INTERVAL_MS = 30_000; // Relaxed — realtime channel handles live sync
 const CONNECTIVITY_FAILURE_THRESHOLD = 3;
-
-const TOOL_CARDS: ToolCard[] = [
-  {
-    accent: 0x00f0ff,
-    description: 'Pull fluid into narrow channels',
-    key: NodeType.Attractor,
-    label: 'Gravity Well [1]',
-  },
-  {
-    accent: 0xff0055,
-    description: 'Push streams away from obstacles',
-    key: NodeType.Repeller,
-    label: 'Deflection Prism [2]',
-  },
-  {
-    accent: 0xffaa00,
-    description: 'Spin particles into orbit',
-    key: NodeType.Vortex,
-    label: 'Vortex Helix [3]',
-  },
-];
 
 
 type ThroughputRetryEntry = {
@@ -121,6 +66,8 @@ const UI_TEXT = {
 const MAX_BACKOFF_ATTEMPTS = 3;
 
 export class Game extends Scene {
+  static bridge: GameBridge = gameBridge;
+
   camera: Phaser.Cameras.Scene2D.Camera;
   background: GameObjects.Rectangle;
   atmosphere: Phaser.GameObjects.Graphics;
@@ -134,7 +81,7 @@ export class Game extends Scene {
   playfieldFrame: Phaser.GameObjects.Graphics;
   dockRail: Phaser.GameObjects.Graphics;
   dockContainer!: Phaser.GameObjects.Container;
-  toolUi!: Record<NodeType, ToolUi>;
+  toolDock!: ToolDock;
   simulation!: ParticleField;
   snapshot: GameSnapshot | null = null;
   localPendingScore = 0;
@@ -163,10 +110,10 @@ export class Game extends Scene {
   private readonly handleToolKeyOne = () => this.selectTool(NodeType.Attractor);
   private readonly handleToolKeyTwo = () => this.selectTool(NodeType.Repeller);
   private readonly handleToolKeyThree = () => this.selectTool(NodeType.Vortex);
-  private readonly handleArchiveToggle = () => this.toggleArchive();
+  private readonly handleArchiveToggle = () => this.archivePanel?.toggle();
   private readonly handleArchiveEscape = () => {
-    if (this.isArchiveOpen) {
-      this.closeArchive();
+    if (this.archivePanel?.isVisible()) {
+      this.archivePanel?.close();
     }
   };
   private readonly handleOnline = () => {
@@ -180,14 +127,7 @@ export class Game extends Scene {
   private resizeHandler: ((gameSize: Phaser.Structs.Size) => void) | null = null;
 
   archiveButton: GameObjects.Text | null = null;
-  archivePanel: Phaser.GameObjects.Container | null = null;
-  archivePanelBg: Phaser.GameObjects.Rectangle | null = null;
-  archiveEntryContainer: Phaser.GameObjects.Container | null = null;
-  archiveScrollY = 0;
-  archiveEntries: ArchiveEntry[] = [];
-  archiveCache: ArchiveEntry[] | null = null;
-  isArchiveOpen = false;
-  isLoadingArchive = false;
+  archivePanel: ArchivePanel | null = null;
 
   constructor() {
     super('Game');
@@ -247,7 +187,7 @@ export class Game extends Scene {
       backgroundColor: '#101420',
       padding: { x: 8, y: 4 },
     }).setInteractive({ useHandCursor: true }).setOrigin(1, 0);
-    this.archiveButton.on('pointerdown', () => this.toggleArchive());
+    this.archiveButton.on('pointerdown', () => this.archivePanel?.toggle());
 
     this.connectivityIndicator = this.add.text(0, 0, '', {
       fontFamily: 'monospace',
@@ -271,8 +211,14 @@ export class Game extends Scene {
       'particle_circle',
     );
     this.dockContainer = this.add.container(0, 0);
-    this.toolUi = this.createToolDock();
-    this.createArchivePanel();
+    this.toolDock = new ToolDock(this, this.dockContainer, (tool) => this.selectTool(tool));
+    this.archivePanel = new ArchivePanel({
+      scene: this,
+      fetchEntries: async () => {
+        const result = await Game.bridge.requestArchiveHistory();
+        return result.ok ? result.data.entries : [];
+      },
+    });
     this.createfpsText();
 
     this.refreshLayout(this.scale.width, this.scale.height);
@@ -296,7 +242,7 @@ export class Game extends Scene {
       this.archiveButton.setDepth(9);
     }
     if (this.archivePanel) {
-      this.archivePanel.setDepth(10);
+      this.archivePanel.getPanel().setDepth(10);
     }
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown);
@@ -349,7 +295,7 @@ export class Game extends Scene {
     // uses a tiered layout (mobile/desktop/fullscreen) so its height grows to
     // accommodate tool names and descriptions on larger screens.
     this.hudHeight = Math.round(72 * this.uiScale);
-    this.dockHeight = this.getDockLayout(width, height).dockHeight;
+    this.dockHeight = ToolDock.getLayout(width, height, this.uiScale).dockHeight;
 
     const availableHeight = Math.max(200, height - this.hudHeight - this.dockHeight);
     this.playfieldScale = Math.min(width / LOGICAL_FIELD_WIDTH, availableHeight / LOGICAL_FIELD_HEIGHT);
@@ -384,7 +330,8 @@ export class Game extends Scene {
       this.archiveButton.setPosition(rightX, this.nodeQuotaText.y + this.nodeQuotaText.height + Math.round(8 * this.uiScale));
       this.archiveButton.setFontSize(this.uiFontSize(12));
     }
-    this.positionArchivePanel();
+    this.archivePanel?.setPosition(this.scale.width / 2, this.scale.height / 2);
+    this.archivePanel?.setScale(this.uiScale);
 
     // Center the 800x600 logical playfield in the remaining area between the
     // HUD and the dock, preserving its aspect ratio.
@@ -399,121 +346,19 @@ export class Game extends Scene {
     this.drawGrid(width, height);
     this.drawFrame();
     this.drawDockRail(width, height);
-    this.updateToolDock();
+    this.toolDock.update(
+      this.snapshot?.selectedTool ?? this.selectedTool,
+      this.rejectedTool,
+      this.uiScale,
+      width,
+      height,
+      this.dockHeight
+    );
   }
 
   private uiFontSize(base: number): string {
     const size = Math.round(Math.max(10, base * this.uiScale));
     return `${size}px`;
-  }
-
-  private getDockTier(width: number, height: number): DockTier {
-    if (width < 640 || height < 520) {
-      return 'mobile';
-    }
-    if (width >= 1280 && height >= 800) {
-      return 'fullscreen';
-    }
-    return 'desktop';
-  }
-
-  private getDockLayout(width: number, height: number): DockLayout {
-    const sf = this.uiScale;
-    const tier = this.getDockTier(width, height);
-
-    const dockHeightBase = tier === 'mobile' ? 140 : tier === 'desktop' ? 150 : 190;
-    const dockHeight = Math.round(dockHeightBase * sf);
-    const cardMargin = Math.round(16 * sf);
-    const cardH = Math.max(Math.round(64 * sf), dockHeight - cardMargin * 2);
-
-    let cardW: number;
-    let spacing: number;
-    if (tier === 'mobile') {
-      cardW = cardH;
-      spacing = cardW + Math.round(12 * sf);
-    } else if (tier === 'desktop') {
-      cardW = Math.round(120 * sf);
-      spacing = cardW + Math.round(24 * sf);
-    } else {
-      cardW = Math.round(150 * sf);
-      spacing = cardW + Math.round(40 * sf);
-    }
-
-    const iconScale = Math.max(
-      0.5,
-      Math.min(tier === 'mobile' ? 1.2 : 1.0, cardW / (tier === 'mobile' ? 90 : 140)),
-    );
-    const iconCenterY =
-      tier === 'mobile'
-        ? 0
-        : -Math.round(cardH / 2) + Math.round(46 * iconScale) + Math.round(8 * sf);
-    const titleCenterY =
-      tier === 'desktop'
-        ? Math.round(cardH / 4)
-        : tier === 'fullscreen'
-          ? Math.round(cardH / 12)
-          : 0;
-    const detailCenterY = Math.round(cardH / 3);
-
-    const titleFontSize = tier === 'fullscreen' ? this.uiFontSize(20) : this.uiFontSize(16);
-    const detailFontSize = this.uiFontSize(12);
-
-    return {
-      tier,
-      dockHeight,
-      cardW,
-      cardH,
-      spacing,
-      iconScale,
-      iconCenterY,
-      titleCenterY,
-      detailCenterY,
-      titleFontSize,
-      detailFontSize,
-      titleVisible: tier !== 'mobile',
-      detailVisible: tier === 'fullscreen',
-    };
-  }
-
-  private createToolDock(): Record<NodeType, ToolUi> {
-    const attractorCard = this.createToolDockCard(TOOL_CARDS[0]!, -200);
-    const repellerCard = this.createToolDockCard(TOOL_CARDS[1]!, 0);
-    const vortexCard = this.createToolDockCard(TOOL_CARDS[2]!, 200);
-
-    return {
-      [NodeType.Attractor]: attractorCard,
-      [NodeType.Repeller]: repellerCard,
-      [NodeType.Vortex]: vortexCard,
-    };
-  }
-
-  private createToolDockCard(card: ToolCard, x: number): ToolUi {
-    const panel = this.add.container(x, 0);
-    const badge = this.add.rectangle(0, 0, 168, 118, 0x101420, 0.92);
-    const title = this.add.text(-72, -36, card.label, {
-      fontFamily: 'Arial Black',
-      fontSize: '18px',
-      color: '#f6ffff',
-    }).setOrigin(0.5);
-    const detail = this.add.text(-72, -4, card.description, {
-      fontFamily: 'monospace',
-      fontSize: '12px',
-      color: '#9cb7c4',
-      wordWrap: { width: 148 },
-      align: 'center',
-    }).setOrigin(0.5);
-    const icon = this.add.graphics();
-    const selectHitArea = this.add.zone(0, 0, 168, 118).setOrigin(0.5).setInteractive({
-      useHandCursor: true,
-    });
-
-    selectHitArea.on('pointerdown', () => {
-      this.selectTool(card.key);
-    });
-
-    panel.add([badge, icon, title, detail, selectHitArea]);
-    this.dockContainer.add(panel);
-    return { badge, detail, icon, panel, selectHitArea, title };
   }
 
   private createfpsText(): void {
@@ -553,7 +398,9 @@ export class Game extends Scene {
     this.input.keyboard?.off('keydown-THREE', this.handleToolKeyThree);
     this.input.keyboard?.off('keydown-H', this.handleArchiveToggle);
     this.input.keyboard?.off('keydown-ESC', this.handleArchiveEscape);
-    this.destroyArchivePanel();
+    this.toolDock.destroy();
+    this.archivePanel?.destroy();
+    this.archivePanel = null;
   };
 
   private applyServerMessage(message: ServerBridgeMessage) {
@@ -583,15 +430,14 @@ export class Game extends Scene {
   }
 
   private handlePointerDown = (pointer: Phaser.Input.Pointer) => {
-    if (this.isArchiveOpen) {
-      if (!this.archivePanel || !this.archivePanelBg) return;
+    if (this.archivePanel?.isVisible()) {
       const panelX = this.scale.width / 2;
       const panelY = this.scale.height / 2;
       const halfW = Math.round(Math.min(200 * this.uiScale, this.scale.width * 0.45));
       const halfH = Math.round(Math.min(150 * this.uiScale, this.scale.height * 0.35));
       if (pointer.x < panelX - halfW || pointer.x > panelX + halfW ||
           pointer.y < panelY - halfH || pointer.y > panelY + halfH) {
-        this.closeArchive();
+        this.archivePanel?.close();
         return;
       }
     }
@@ -624,9 +470,7 @@ export class Game extends Scene {
       return false;
     }
 
-    const toolHitAreas = new Set<unknown>(
-      Object.values(this.toolUi).map((ui) => ui.selectHitArea)
-    );
+    const toolHitAreas = new Set<unknown>(this.toolDock.getHitAreas());
     for (const obj of hitObjects) {
       if (toolHitAreas.has(obj)) {
         return true;
@@ -699,7 +543,7 @@ export class Game extends Scene {
     const scoreBatch = this.localPendingScore;
     this.localPendingScore = 0;
 
-    const result = await submitThroughputRequest(scoreBatch);
+    const result = await Game.bridge.submitThroughputRequest(scoreBatch);
     if (!result.ok) {
       this.throughputRetryQueue.push({
         attempts: 1,
@@ -735,7 +579,7 @@ export class Game extends Scene {
 
   private async loadInitialSnapshot() {
     try {
-      const response = await requestInitialSnapshot();
+      const response = await Game.bridge.requestInitialSnapshot();
       if (!response.ok) {
         this.consecutiveNetworkFailures++;
         this.checkSyncStalledState();
@@ -770,7 +614,7 @@ export class Game extends Scene {
     }
 
     try {
-      this.realtimeConnection = await connectRealtime({
+      this.realtimeConnection = await Game.bridge.connectRealtime({
         channel: `resonance_field_${postId}`,
         onConnect: () => {
           console.log('[Realtime] Connected to field channel');
@@ -781,7 +625,11 @@ export class Game extends Scene {
         },
         onMessage: (data: unknown) => {
           console.log('[Realtime] Received message:', data);
-          this.handleRealtimeEvent(data as RealtimeEvent);
+          if (isRealtimeEvent(data)) {
+            this.handleRealtimeEvent(data);
+          } else {
+            console.warn('[Realtime] Discarded invalid event:', data);
+          }
         },
       });
     } catch (error) {
@@ -791,7 +639,7 @@ export class Game extends Scene {
 
   private handleRealtimeEvent(event: RealtimeEvent) {
     switch (event.type) {
-      case 'node_added':
+      case RealtimeEventType.NodeAdded:
         console.log('Node added:', event.node);
         // Ignore our own deploys — the HTTP response already applied them.
         if (event.node.ownerId !== this.snapshot?.username) {
@@ -802,7 +650,7 @@ export class Game extends Scene {
         }
         break;
 
-      case 'node_removed':
+      case RealtimeEventType.NodeRemoved:
         console.log('Node removed:', event.nodeId);
         this.applyServerMessage({
           type: BridgeMessageType.NodeRemoved,
@@ -810,7 +658,7 @@ export class Game extends Scene {
         });
         break;
 
-      case 'score_updated':
+      case RealtimeEventType.ScoreUpdated:
         console.log('Score updated:', event.score);
         // Only apply if the score is higher than what we already have locally
         // (our own throughput flush already updates the snapshot optimistically).
@@ -960,7 +808,7 @@ export class Game extends Scene {
     this.nodeQuotaText.setText(
       `${UI_TEXT.toolPrefix} ${this.snapshot.userActiveNodeCount} / ${this.snapshot.userMaxActiveNodes}`
     );
-    this.updateToolDock();
+    this.refreshToolDock();
   }
 
   private selectTool(tool: NodeType) {
@@ -971,7 +819,7 @@ export class Game extends Scene {
     this.rejectionResetTimer?.remove(false);
     this.rejectionResetTimer = null;
     this.statusText.setText(UI_TEXT.deploySelected(tool));
-    this.updateToolDock();
+    this.refreshToolDock();
 
     // Sync with server. Capture the tool we're replacing so a failed sync can
     // revert to it; reading the revert target from the snapshot later is
@@ -986,7 +834,7 @@ export class Game extends Scene {
       return;
     }
 
-    const result = await selectToolRequest(tool);
+    const result = await Game.bridge.selectToolRequest(tool);
     if (!result.ok) {
       console.error('Failed to sync tool selection:', result.error.message);
       // Revert to the tool that was active before this selection. Only revert
@@ -997,110 +845,32 @@ export class Game extends Scene {
         if (this.snapshot) {
           this.snapshot.selectedTool = previousTool;
         }
-        this.updateToolDock();
+        this.refreshToolDock();
       }
     }
   }
 
-  private updateToolDock() {
-    const activeTool = this.snapshot?.selectedTool ?? this.selectedTool;
-    const sf = this.uiScale;
-    const { width, height } = this.scale;
-    const dockY = height - Math.round(this.dockHeight / 2);
-    const layout = this.getDockLayout(width, height);
-
-    TOOL_CARDS.forEach((card, index) => {
-      const ui = this.toolUi[card.key];
-      const isActive = card.key === activeTool;
-      const isRejected = card.key === this.rejectedTool;
-      const x = (index - 1) * layout.spacing;
-
-      ui.panel.setPosition(width / 2 + x, dockY);
-      ui.badge.setSize(layout.cardW, layout.cardH);
-      ui.badge.setPosition(0, 0);
-      ui.title.setVisible(layout.titleVisible);
-      ui.title.setFontSize(layout.titleFontSize);
-      ui.title.setPosition(0, layout.titleCenterY);
-      ui.title.setColor(isActive ? '#ffffff' : '#d8e1e8');
-      ui.detail.setVisible(layout.detailVisible);
-      ui.detail.setFontSize(layout.detailFontSize);
-      ui.detail.setPosition(0, layout.detailCenterY);
-      ui.detail.setWordWrapWidth(Math.max(40, layout.cardW - Math.round(16 * sf)));
-      ui.detail.setColor(isActive ? '#f7fbff' : '#9cb7c4');
-      ui.selectHitArea.setSize(layout.cardW, layout.cardH);
-      ui.selectHitArea.setPosition(0, 0);
-      ui.badge.setFillStyle(
-        isRejected ? 0xff0055 : card.accent,
-        isRejected ? 0.22 : isActive ? 0.1 : 0.12
-      );
-      ui.badge.setStrokeStyle(
-        isRejected ? Math.round(4 * sf) : isActive ? Math.round(3 * sf) : 1,
-        isRejected ? 0xff0055 : card.accent,
-        isRejected || isActive ? 1 : 0.4
-      );
-
-      const iconCy = layout.iconCenterY;
-      const iconScale = layout.iconScale;
-      const isMobile = layout.tier === 'mobile';
-
-      ui.icon.clear();
-      ui.icon.lineStyle(
-        isRejected ? Math.round(4 * sf) : isActive ? Math.round(3 * sf) : 2,
-        isRejected ? 0xff0055 : card.accent,
-        1
-      );
-      ui.icon.fillStyle(isRejected ? 0xff0055 : card.accent, isActive ? 0.1 : 0.1);
-
-      if (card.key === NodeType.Attractor) {
-        const radii: [number, number, number] = isActive ? [18, 28, 38] : [16, 26, 36];
-        const y = iconCy + (isMobile ? 0 : Math.round(-8 * iconScale));
-        ui.icon.strokeCircle(0, y + 100, radii[0] * iconScale);
-        ui.icon.strokeCircle(0, y, radii[1] * iconScale);
-        ui.icon.strokeCircle(0, y, radii[2] * iconScale);
-      } else if (card.key === NodeType.Repeller) {
-        const ts = iconScale;
-        const y = iconCy + (isMobile ? Math.round(2 * ts) : 0);
-        ui.icon.strokeTriangle(
-          Math.round(-22 * ts),
-          Math.round(16 * ts) + y,
-          0,
-          Math.round(-20 * ts) + y,
-          Math.round(22 * ts),
-          Math.round(16 * ts) + y
-        );
-        ui.icon.fillTriangle(
-          Math.round(-22 * ts),
-          Math.round(16 * ts) + y,
-          0,
-          Math.round(-20 * ts) + y,
-          Math.round(22 * ts),
-          Math.round(16 * ts) + y
-        );
-      } else {
-        ui.icon.beginPath();
-        ui.icon.arc(
-          0,
-          iconCy + (isMobile ? 0 : Math.round(-4 * iconScale)),
-          (isActive ? 25 : 21) * iconScale,
-          Phaser.Math.DegToRad(30),
-          Phaser.Math.DegToRad(330),
-          false
-        );
-        ui.icon.strokePath();
-      }
-    });
+  private refreshToolDock() {
+    this.toolDock.update(
+      this.snapshot?.selectedTool ?? this.selectedTool,
+      this.rejectedTool,
+      this.uiScale,
+      this.scale.width,
+      this.scale.height,
+      this.dockHeight
+    );
   }
 
   private handleDeployRejected(message: NodeDeployRejectedMessage) {
     this.rejectedTool = message.data.requested.type;
     this.statusText.setText(`${UI_TEXT.deployFailed}: ${message.data.message}`);
-    this.updateToolDock();
+    this.refreshToolDock();
 
     this.rejectionResetTimer?.remove(false);
     this.rejectionResetTimer = this.time.delayedCall(900, () => {
       this.rejectedTool = null;
       this.rejectionResetTimer = null;
-      this.updateToolDock();
+      this.refreshToolDock();
     });
   }
 
@@ -1212,244 +982,13 @@ export class Game extends Scene {
     this.snapshot.userActiveNodeCount = userNodes.length;
   }
 
-  private createArchivePanel() {
-    const panelWidth = 400;
-    const panelHeight = 300;
-    const entryHeight = 28;
-    const headerHeight = 36;
-    const contentHeight = panelHeight - headerHeight;
-
-    this.archivePanel = this.add.container(0, 0);
-    this.archivePanel.setDepth(10);
-    this.archivePanel.setVisible(false);
-
-    const bg = this.add.rectangle(0, 0, panelWidth, panelHeight, 0x0d0e15, 0.92);
-    bg.setStrokeStyle(2, 0x00f0ff);
-    this.archivePanel.add(bg);
-
-    const title = this.add.text(0, -panelHeight / 2 + 12, 'ARCHIVE', {
-      fontFamily: 'monospace',
-      fontSize: '16px',
-      color: '#00f0ff',
-    }).setOrigin(0.5, 0);
-    this.archivePanel.add(title);
-
-    const headerLine = this.add.graphics();
-    headerLine.lineStyle(1, 0x00f0ff, 0.3);
-    headerLine.lineBetween(-panelWidth / 2 + 12, -panelHeight / 2 + 30, panelWidth / 2 - 12, -panelHeight / 2 + 30);
-    this.archivePanel.add(headerLine);
-
-    const columnHeaders = this.add.text(0, -panelHeight / 2 + 32, 'Date          Score        Nodes       Seed', {
-      fontFamily: 'monospace',
-      fontSize: '11px',
-      color: '#5a7a8a',
-    }).setOrigin(0.5, 0);
-    this.archivePanel.add(columnHeaders);
-
-    this.archiveEntryContainer = this.add.container(0, 0);
-    this.archivePanel.add(this.archiveEntryContainer);
-
-    const clipX = -panelWidth / 2 + 2;
-    const clipY = -panelHeight / 2 + headerHeight;
-    const clipW = panelWidth - 4;
-    const clipH = contentHeight;
-
-    const maskGraphics = this.add.graphics();
-    maskGraphics.fillStyle(0xffffff);
-    maskGraphics.fillRect(clipX, clipY, clipW, clipH);
-    maskGraphics.setVisible(false);
-    const geometryMask = maskGraphics.createGeometryMask();
-    this.archiveEntryContainer.setMask(geometryMask);
-
-    const emptyText = this.add.text(0, 0, 'No archived days yet', {
-      fontFamily: 'monospace',
-      fontSize: '14px',
-      color: '#5a7a8a',
-    }).setOrigin(0.5);
-    emptyText.setName('archiveEmpty');
-    this.archiveEntryContainer.add(emptyText);
-
-    const dragState = { isDragging: false, startY: 0, startScrollY: 0 };
-
-    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      if (!dragState.isDragging || !this.archiveEntryContainer) return;
-      const dy = pointer.y - dragState.startY;
-      const totalH = this.archiveEntries.length * entryHeight;
-      const maxScroll = Math.max(0, totalH - contentHeight);
-      this.archiveScrollY = Phaser.Math.Clamp(dragState.startScrollY + dy, -maxScroll, 0);
-      this.archiveEntryContainer.setY(this.archiveScrollY);
-    });
-
-    this.input.on('pointerup', () => {
-      dragState.isDragging = false;
-    });
-
-    this.input.on('pointerout', () => {
-      dragState.isDragging = false;
-    });
-
-    this.archiveEntryContainer.setInteractive(new Phaser.Geom.Rectangle(
-      -panelWidth / 2,
-      clipY,
-      panelWidth,
-      clipH
-    ), Phaser.Geom.Rectangle.Contains);
-
-    this.archiveEntryContainer.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (!this.archiveEntryContainer) return;
-      const totalH = this.archiveEntries.length * entryHeight;
-      if (totalH > contentHeight) {
-        dragState.isDragging = true;
-        dragState.startY = pointer.y;
-        dragState.startScrollY = this.archiveScrollY;
-      }
-    });
-
-    this.archivePanelBg = bg;
-  }
-
-  private destroyArchivePanel() {
-    this.archivePanel?.destroy();
-    this.archivePanel = null;
-    this.archivePanelBg = null;
-    this.archiveEntryContainer = null;
-  }
-
-  private positionArchivePanel() {
-    if (!this.archivePanel) return;
-    this.archivePanel.setPosition(this.scale.width / 2, this.scale.height / 2);
-    this.archivePanel.setScale(this.uiScale);
-  }
-
-  private toggleArchive() {
-    if (this.isArchiveOpen) {
-      this.closeArchive();
-    } else {
-      this.openArchive();
-    }
-  }
-
-  private openArchive() {
-    this.isArchiveOpen = true;
-    if (this.archivePanel) {
-      this.archivePanel.setVisible(true);
-    }
-    this.positionArchivePanel();
-
-    if (this.archiveCache) {
-      this.renderArchiveEntries(this.archiveCache);
-    } else if (!this.isLoadingArchive) {
-      void this.fetchArchive();
-    }
-  }
-
-  private closeArchive() {
-    this.isArchiveOpen = false;
-    if (this.archivePanel) {
-      this.archivePanel.setVisible(false);
-    }
-  }
-
-  private async fetchArchive() {
-    if (this.isLoadingArchive) return;
-    this.isLoadingArchive = true;
-
-    try {
-      const result = await requestArchiveHistory();
-      if (!result.ok) {
-        console.error('Failed to fetch archive history:', result.error.message);
-        this.renderArchiveEntries([]);
-        return;
-      }
-
-      this.archiveCache = result.data.entries;
-      this.renderArchiveEntries(result.data.entries);
-    } catch (error) {
-      console.error('Archive fetch error:', error);
-      this.renderArchiveEntries([]);
-    } finally {
-      this.isLoadingArchive = false;
-    }
-  }
-
-  private renderArchiveEntries(entries: ArchiveEntry[]) {
-    if (!this.archiveEntryContainer) return;
-
-    this.archiveEntries = entries;
-    this.archiveScrollY = 0;
-    this.archiveEntryContainer.setY(0);
-
-    this.archiveEntryContainer.removeAll(true);
-
-    const entryHeight = 28;
-
-    if (entries.length === 0) {
-      const emptyText = this.add.text(0, 0, 'No archived days yet', {
-        fontFamily: 'monospace',
-        fontSize: '14px',
-        color: '#5a7a8a',
-      }).setOrigin(0.5);
-      emptyText.setName('archiveEmpty');
-      this.archiveEntryContainer.add(emptyText);
-      return;
-    }
-
-    const bestScore = Math.max(...entries.map((e) => e.score));
-
-    entries.forEach((entry, index) => {
-      const isBest = entry.score === bestScore && entries.length > 1;
-      const rowBg = this.add.rectangle(
-        0,
-        index * entryHeight,
-        396,
-        entryHeight - 2,
-        isBest ? 0x1a1a00 : index % 2 === 0 ? 0x101420 : 0x0d0e15,
-        0.6
-      );
-      if (isBest) {
-        rowBg.setStrokeStyle(1, 0xffd700, 0.8);
-      }
-      this.archiveEntryContainer!.add(rowBg);
-
-      const dateStr = formatDayKey(entry.dayKey);
-      const scoreColor = isBest ? '#ffd700' : '#ffaa00';
-      const rowText = this.add.text(-180, index * entryHeight, dateStr, {
-        fontFamily: 'monospace',
-        fontSize: '12px',
-        color: '#9cb7c4',
-      }).setOrigin(0, 0.5);
-      this.archiveEntryContainer!.add(rowText);
-
-      const scoreText = this.add.text(-70, index * entryHeight, String(entry.score), {
-        fontFamily: 'monospace',
-        fontSize: '12px',
-        color: scoreColor,
-      }).setOrigin(0, 0.5);
-      this.archiveEntryContainer!.add(scoreText);
-
-      const nodesText = this.add.text(40, index * entryHeight, String(entry.nodeCount), {
-        fontFamily: 'monospace',
-        fontSize: '12px',
-        color: '#9cb7c4',
-      }).setOrigin(0, 0.5);
-      this.archiveEntryContainer!.add(nodesText);
-
-      const seedText = this.add.text(120, index * entryHeight, String(entry.layoutSeed), {
-        fontFamily: 'monospace',
-        fontSize: '12px',
-        color: '#5a7a8a',
-      }).setOrigin(0, 0.5);
-      this.archiveEntryContainer!.add(seedText);
-    });
-  }
-
   private async pollServerState() {
     if (!this.isOnline) {
       return;
     }
 
     try {
-      const response = await requestInitialSnapshot();
+      const response = await Game.bridge.requestInitialSnapshot();
       if (!response.ok) {
         this.consecutiveNetworkFailures++;
         this.checkSyncStalledState();
@@ -1540,7 +1079,7 @@ export class Game extends Scene {
   }
 
   private async processSingleRetry(entry: { count: number; attempts: number }) {
-    const result = await submitThroughputRequest(entry.count);
+    const result = await Game.bridge.submitThroughputRequest(entry.count);
     if (result.ok) {
       this.applyThroughputSuccess(result.data);
       this.updateSyncSpinner();
@@ -1582,7 +1121,7 @@ export class Game extends Scene {
       this.currentDeployItem = item;
       this.updatePendingDeployIndicator();
 
-      const result = await deployNodeRequest({
+      const result = await Game.bridge.deployNodeRequest({
         type: item.type,
         x: item.x,
         y: item.y,
@@ -1619,53 +1158,15 @@ export class Game extends Scene {
 
     const count = this.deployQueue.length + (this.deployInFlight ? 1 : 0);
     const tool = this.currentDeployItem?.type ?? this.selectedTool;
-    const ui = this.toolUi[tool];
-    const layout = this.getDockLayout(this.scale.width, this.scale.height);
+    const panel = this.toolDock.getToolPanel(tool);
+    const layout = ToolDock.getLayout(this.scale.width, this.scale.height, this.uiScale);
     this.pendingDeployIndicator.setText(`${UI_TEXT.pending} ${count}`);
     this.pendingDeployIndicator.setPosition(
-      ui.panel.x + Math.round(60 * this.uiScale),
-      ui.panel.y - Math.round(layout.cardH / 2) - Math.round(14 * this.uiScale)
+      panel.x + Math.round(60 * this.uiScale),
+      panel.y - Math.round(layout.cardH / 2) - Math.round(14 * this.uiScale)
     );
     this.pendingDeployIndicator.setVisible(true);
   }
 }
 
-const deriveDeployRejectionReason = (message: string) => {
-  const lowerMessage = message.toLowerCase();
 
-  if (lowerMessage.includes('position')) {
-    return NodeDeployRejectionReason.InvalidPosition;
-  }
-
-  if (lowerMessage.includes('type')) {
-    return NodeDeployRejectionReason.InvalidType;
-  }
-
-  if (lowerMessage.includes('quota')) {
-    return NodeDeployRejectionReason.QuotaExceeded;
-  }
-
-  return NodeDeployRejectionReason.SyncRequired;
-};
-
-const formatCountdown = (targetUtcMs: number) => {
-  const remaining = Math.max(0, targetUtcMs - Date.now());
-  const totalSeconds = Math.floor(remaining / 1000);
-  const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, '0');
-  const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0');
-  const seconds = String(totalSeconds % 60).padStart(2, '0');
-  return `${hours}:${minutes}:${seconds}`;
-};
-
-const formatDayKey = (dayKey: string) => {
-  const date = new Date(dayKey);
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-};
-
-const formatRelativeTime = (elapsedMs: number) => {
-  if (elapsedMs < 2000) return '(just now)';
-  const seconds = Math.floor(elapsedMs / 1000);
-  if (seconds < 60) return `(${seconds}s ago)`;
-  const minutes = Math.floor(seconds / 60);
-  return `(${minutes}m ago)`;
-};

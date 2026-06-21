@@ -5,6 +5,7 @@ import {
   NODE_LIFESPAN_MS,
   DAILY_RESET_HOUR_UTC,
   NodeType,
+  GamePhase,
   createEmptySnapshot,
   type SnapshotSeed,
 } from '../contract';
@@ -41,7 +42,7 @@ describe('createEmptySnapshot', () => {
     expect(snapshot.postId).toBe('post-1');
     expect(snapshot.username).toBe('alice');
     expect(snapshot.subredditName).toBe('test-sub');
-    expect(snapshot.phase).toBe('booting');
+    expect(snapshot.phase).toBe(GamePhase.Booting);
     expect(snapshot.globalScore).toBe(0);
     expect(snapshot.nodes).toEqual([]);
     expect(snapshot.userActiveNodeIds).toEqual([]);

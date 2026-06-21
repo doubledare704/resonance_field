@@ -1,21 +1,11 @@
+import type { FieldCircle, FieldLayout, FieldRect } from './field-layout';
+
 export const CONTRACT_VERSION = 'resonance-field/v1';
 export const MAX_ACTIVE_NODES = 3;
 export const NODE_LIFESPAN_MS = 60_000;
 export const DAILY_RESET_HOUR_UTC = 0;
 
-export type FieldRect = { x: number; y: number; w: number; h: number };
-export type FieldCircle = { x: number; y: number; r: number };
-
-export type FieldLayout = {
-  dayKey: string;
-  seed: number;
-  templateId: number;
-  bounds: FieldRect;
-  obstacles: FieldRect[];
-  hazards: FieldCircle[];
-  sink: FieldCircle;
-  spawnBand: FieldRect;
-};
+export type { FieldCircle, FieldLayout, FieldRect };
 
 export enum NodeType {
   Attractor = 'ATTRACTOR',
@@ -23,7 +13,11 @@ export enum NodeType {
   Vortex = 'VORTEX',
 }
 
-export type GamePhase = 'booting' | 'idle' | 'active';
+export enum GamePhase {
+  Booting = 'booting',
+  Idle = 'idle',
+  Active = 'active',
+}
 
 export enum NodeRemovalReason {
   Expired = 'expired',
@@ -54,6 +48,35 @@ export enum BridgeMessageType {
 export enum ScoreUpdateReason {
   Batch = 'batch',
   Reset = 'reset',
+}
+
+export enum ResponseType {
+  Snapshot = 'snapshot',
+  NodeDeployed = 'node_deployed',
+  ThroughputAccepted = 'throughput_accepted',
+  ToolSelected = 'tool_selected',
+  ResetComplete = 'reset_complete',
+  Error = 'error',
+}
+
+export enum RealtimeEventType {
+  NodeAdded = 'node_added',
+  NodeRemoved = 'node_removed',
+  ScoreUpdated = 'score_updated',
+}
+
+export enum ApiRoute {
+  Init = '/init',
+  NodeDeploy = '/node-deploy',
+  Throughput = '/throughput',
+  ToolSelect = '/tool-select',
+  Reset = '/reset',
+  History = '/history',
+}
+
+export enum RedisKeyPrefix {
+  State = 'resonance:state:',
+  History = 'resonance:history:',
 }
 
 export type GameNode = {
@@ -175,13 +198,13 @@ export type ServerBridgeMessage =
   | SyncErrorMessage;
 
 export type GameInitResponse = {
-  type: 'snapshot';
+  type: ResponseType.Snapshot;
   contractVersion: typeof CONTRACT_VERSION;
   snapshot: GameSnapshot;
 };
 
 export type NodeDeployResponse = {
-  type: 'node_deployed';
+  type: ResponseType.NodeDeployed;
   contractVersion: typeof CONTRACT_VERSION;
   snapshot: GameSnapshot;
   node: GameNode;
@@ -189,14 +212,14 @@ export type NodeDeployResponse = {
 };
 
 export type ThroughputResponse = {
-  type: 'throughput_accepted';
+  type: ResponseType.ThroughputAccepted;
   contractVersion: typeof CONTRACT_VERSION;
   snapshot: GameSnapshot;
   scoreDelta: number;
 };
 
 export type ToolSelectResponse = {
-  type: 'tool_selected';
+  type: ResponseType.ToolSelected;
   contractVersion: typeof CONTRACT_VERSION;
   snapshot: GameSnapshot;
 };
@@ -214,23 +237,23 @@ export type HistoryResponse = {
 };
 
 export type ResetResponse = {
-  type: 'reset_complete';
+  type: ResponseType.ResetComplete;
   contractVersion: typeof CONTRACT_VERSION;
   snapshot: GameSnapshot;
   archivedScore: number;
 };
 
 export type ErrorResponse = {
-  type: 'error';
+  type: ResponseType.Error;
   contractVersion: typeof CONTRACT_VERSION;
   message: string;
 };
 
 /** Compact payloads sent over the Devvit realtime channel (kept under 200 bytes). */
 export type RealtimeEvent =
-  | { type: 'node_added'; node: GameNode }
-  | { type: 'node_removed'; nodeId: string }
-  | { type: 'score_updated'; score: number; delta: number };
+  | { type: RealtimeEventType.NodeAdded; node: GameNode }
+  | { type: RealtimeEventType.NodeRemoved; nodeId: string }
+  | { type: RealtimeEventType.ScoreUpdated; score: number; delta: number };
 
 
 
@@ -254,7 +277,7 @@ export const createEmptySnapshot = ({
     postId,
     subredditName,
     username,
-    phase: 'booting',
+    phase: GamePhase.Booting,
     dailyResetAtUtc: now - (now % 86_400_000) + 86_400_000,
     globalScore: 0,
     nodes: [],

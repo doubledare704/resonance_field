@@ -1,13 +1,11 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { context, realtime } from '@devvit/web/server';
 import {
-  buildInitialResponse,
-  deployNode,
-  getArchiveHistory,
-  resetDailyState,
-  selectTool,
-  submitThroughput,
-} from '../core/resonance-field';
+  ApiRoute,
+  CONTRACT_VERSION,
+  RealtimeEventType,
+  ResponseType,
+} from '../../shared/api';
 import type {
   ErrorResponse,
   GameInitResponse,
@@ -21,26 +19,41 @@ import type {
   ToolSelectMessage,
   ToolSelectResponse,
 } from '../../shared/api';
+import {
+  buildInitialResponse,
+  deployNode,
+  getArchiveHistory,
+  resetDailyState,
+  selectTool,
+  submitThroughput,
+} from '../core/resonance-field';
 
-/** Channel name for a post — colons are not allowed in Devvit channel names. */
 const realtimeChannel = (postId: string) => `resonance_field_${postId}`;
+
+const createErrorResponse = (message: string): ErrorResponse => ({
+  contractVersion: CONTRACT_VERSION,
+  message,
+  type: ResponseType.Error,
+});
+
+const getPostId = () => context.postId ?? null;
+
+const requirePostId = (c: Context) => {
+  const postId = getPostId();
+  if (!postId) {
+    return {
+      error: c.json<ErrorResponse>(createErrorResponse('postId is required but missing from context'), 400),
+      postId: null,
+    };
+  }
+  return { error: null, postId };
+};
 
 export const api = new Hono();
 
-api.get('/init', async (c) => {
-  const { postId } = context;
-
-  if (!postId) {
-    console.error('API Init Error: postId not found in devvit context');
-    return c.json<ErrorResponse>(
-      {
-        contractVersion: 'resonance-field/v1',
-        message: 'postId is required but missing from context',
-        type: 'error',
-      },
-      400
-    );
-  }
+api.get(ApiRoute.Init, async (c) => {
+  const { error, postId } = requirePostId(c);
+  if (error) return error;
 
   try {
     const response = await buildInitialResponse();
@@ -49,58 +62,37 @@ api.get('/init', async (c) => {
     }
 
     return c.json<GameInitResponse>(response);
-  } catch (error) {
-    console.error(`API Init Error for post ${postId}:`, error);
-    let errorMessage = 'Unknown error during initialization';
-    if (error instanceof Error) {
-      errorMessage = `Initialization failed: ${error.message}`;
-    }
-    return c.json<ErrorResponse>(
-      { contractVersion: 'resonance-field/v1', message: errorMessage, type: 'error' },
-      400
-    );
+  } catch (err) {
+    console.error(`API Init Error for post ${postId}:`, err);
+    const errorMessage = err instanceof Error ? `Initialization failed: ${err.message}` : 'Unknown error during initialization';
+    return c.json<ErrorResponse>(createErrorResponse(errorMessage), 400);
   }
 });
 
-api.post('/node-deploy', async (c) => {
+api.post(ApiRoute.NodeDeploy, async (c) => {
   try {
     const input = await c.req.json<NodeDeployMessage['data']>();
     const result = await deployNode(input);
 
     if (!result) {
-      return c.json<ErrorResponse>(
-        {
-          contractVersion: 'resonance-field/v1',
-          message: 'postId is required but missing from context',
-          type: 'error',
-        },
-        400
-      );
+      return c.json<ErrorResponse>(createErrorResponse('postId is required but missing from context'), 400);
     }
 
     if ('error' in result) {
-      return c.json<ErrorResponse>(
-        {
-          contractVersion: 'resonance-field/v1',
-          message: result.message,
-          type: 'error',
-        },
-        400
-      );
+      return c.json<ErrorResponse>(createErrorResponse(result.message), 400);
     }
 
-    // Broadcast to all connected clients on this post's realtime channel.
-    const postId = context.postId;
+    const postId = getPostId();
     if (postId) {
       const addedEvent: RealtimeEvent = {
-        type: 'node_added',
+        type: RealtimeEventType.NodeAdded,
         node: result.node,
       };
       void realtime.send(realtimeChannel(postId), addedEvent);
 
       if (result.removedNodeId) {
         const removedEvent: RealtimeEvent = {
-          type: 'node_removed',
+          type: RealtimeEventType.NodeRemoved,
           nodeId: result.removedNodeId,
         };
         void realtime.send(realtimeChannel(postId), removedEvent);
@@ -113,55 +105,33 @@ api.post('/node-deploy', async (c) => {
         node: result.node,
         removedNodeId: result.removedNodeId,
         snapshot: result.snapshot,
-        type: 'node_deployed',
+        type: ResponseType.NodeDeployed,
       },
       200
     );
-  } catch (error) {
-    console.error('API node deploy error:', error);
-    return c.json<ErrorResponse>(
-      {
-        contractVersion: 'resonance-field/v1',
-        message: 'Node deployment failed',
-        type: 'error',
-      },
-      400
-    );
+  } catch (err) {
+    console.error('API node deploy error:', err);
+    return c.json<ErrorResponse>(createErrorResponse('Node deployment failed'), 400);
   }
 });
 
-api.post('/throughput', async (c) => {
+api.post(ApiRoute.Throughput, async (c) => {
   try {
     const input = await c.req.json<SubmitThroughputMessage['data']>();
     const result = await submitThroughput(input.count);
 
     if (!result) {
-      return c.json<ErrorResponse>(
-        {
-          contractVersion: 'resonance-field/v1',
-          message: 'postId is required but missing from context',
-          type: 'error',
-        },
-        400
-      );
+      return c.json<ErrorResponse>(createErrorResponse('postId is required but missing from context'), 400);
     }
 
     if ('error' in result) {
-      return c.json<ErrorResponse>(
-        {
-          contractVersion: 'resonance-field/v1',
-          message: result.message,
-          type: 'error',
-        },
-        400
-      );
+      return c.json<ErrorResponse>(createErrorResponse(result.message), 400);
     }
 
-    // Broadcast the new global score to all clients.
-    const postId = context.postId;
+    const postId = getPostId();
     if (postId) {
       const scoreEvent: RealtimeEvent = {
-        type: 'score_updated',
+        type: RealtimeEventType.ScoreUpdated,
         score: result.snapshot.globalScore,
         delta: result.scoreDelta,
       };
@@ -169,133 +139,66 @@ api.post('/throughput', async (c) => {
     }
 
     return c.json<ThroughputResponse>(result, 200);
-  } catch (error) {
-    console.error('API throughput error:', error);
-    return c.json<ErrorResponse>(
-      {
-        contractVersion: 'resonance-field/v1',
-        message: 'Throughput submission failed',
-        type: 'error',
-      },
-      400
-    );
+  } catch (err) {
+    console.error('API throughput error:', err);
+    return c.json<ErrorResponse>(createErrorResponse('Throughput submission failed'), 400);
   }
 });
 
-api.post('/tool-select', async (c) => {
+api.post(ApiRoute.ToolSelect, async (c) => {
   try {
     const input = await c.req.json<ToolSelectMessage['data']>();
     const result = await selectTool(input.tool);
 
     if (!result) {
-      return c.json<ErrorResponse>(
-        {
-          contractVersion: 'resonance-field/v1',
-          message: 'postId is required but missing from context',
-          type: 'error',
-        },
-        400
-      );
+      return c.json<ErrorResponse>(createErrorResponse('postId is required but missing from context'), 400);
     }
 
     if ('error' in result) {
-      return c.json<ErrorResponse>(
-        {
-          contractVersion: 'resonance-field/v1',
-          message: result.message,
-          type: 'error',
-        },
-        400
-      );
+      return c.json<ErrorResponse>(createErrorResponse(result.message), 400);
     }
 
     return c.json<ToolSelectResponse>(
       {
         contractVersion: result.snapshot.contractVersion,
         snapshot: result.snapshot,
-        type: 'tool_selected',
+        type: ResponseType.ToolSelected,
       },
       200
     );
-  } catch (error) {
-    console.error('API tool select error:', error);
-    return c.json<ErrorResponse>(
-      {
-        contractVersion: 'resonance-field/v1',
-        message: 'Tool selection failed',
-        type: 'error',
-      },
-      400
-    );
+  } catch (err) {
+    console.error('API tool select error:', err);
+    return c.json<ErrorResponse>(createErrorResponse('Tool selection failed'), 400);
   }
 });
 
-api.post('/reset', async (c) => {
+api.post(ApiRoute.Reset, async (c) => {
   try {
     const result = await resetDailyState();
     if (!result) {
-      return c.json<ErrorResponse>(
-        {
-          contractVersion: 'resonance-field/v1',
-          message: 'postId is required but missing from context',
-          type: 'error',
-        },
-        400
-      );
+      return c.json<ErrorResponse>(createErrorResponse('postId is required but missing from context'), 400);
     }
 
     return c.json<ResetResponse>(result, 200);
-  } catch (error) {
-    console.error('API reset error:', error);
-    return c.json<ErrorResponse>(
-      {
-        contractVersion: 'resonance-field/v1',
-        message: 'Reset failed',
-        type: 'error',
-      },
-      400
-    );
+  } catch (err) {
+    console.error('API reset error:', err);
+    return c.json<ErrorResponse>(createErrorResponse('Reset failed'), 400);
   }
 });
 
-api.get('/history', async (c) => {
-  const { postId } = context;
-
-  if (!postId) {
-    console.error('API History Error: postId not found in devvit context');
-    return c.json<ErrorResponse>(
-      {
-        contractVersion: 'resonance-field/v1',
-        message: 'postId is required but missing from context',
-        type: 'error',
-      },
-      400
-    );
-  }
+api.get(ApiRoute.History, async (c) => {
+  const { error, postId } = requirePostId(c);
+  if (error) return error;
 
   try {
     const result = await getArchiveHistory();
     if (!result) {
-      return c.json<ErrorResponse>(
-        {
-          contractVersion: 'resonance-field/v1',
-          message: 'Failed to retrieve archive history',
-          type: 'error',
-        },
-        500
-      );
+      return c.json<ErrorResponse>(createErrorResponse('Failed to retrieve archive history'), 500);
     }
 
     return c.json<HistoryResponse>(result);
-  } catch (error) {
-    console.error(`API History Error for post ${postId}:`, error);
-    return c.json<ErrorResponse>(
-      {
-        contractVersion: 'resonance-field/v1',
-        message: 'History retrieval failed',
-        type: 'error',
-      },
-      500
-    );
+  } catch (err) {
+    console.error(`API History Error for post ${postId}:`, err);
+    return c.json<ErrorResponse>(createErrorResponse('History retrieval failed'), 500);
   }
 });
